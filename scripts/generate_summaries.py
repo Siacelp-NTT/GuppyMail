@@ -16,18 +16,10 @@ import os
 import json
 import time
 import argparse
-from concurrent.futures import ThreadPoolExecutor, wait as fut_wait
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, wait as fut_wait, FIRST_COMPLETED
 from tqdm import tqdm
 
 from openai import OpenAI
-
-
-def create_client(api_key=None, base_url=None):
-    return OpenAI(
-        api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-        base_url=base_url or os.environ.get("OPENAI_BASE_URL", None),
-    )
 
 
 SYSTEM_PROMPT = """You are a tiny, friendly email assistant. Your summaries are:
@@ -47,11 +39,15 @@ NOT this style:
 
 
 def summarize_one(email_text, subject, model, api_key, base_url, max_tokens):
-    client = create_client(api_key, base_url)
-    if len(email_text) > 3000:
-        email_text = email_text[:3000] + "... [truncated]"
-    full_text = f"Subject: {subject}\n\n{email_text}" if subject else email_text
+    client = OpenAI(
+        api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+        base_url=base_url or os.environ.get("OPENAI_BASE_URL", None),
+        max_retries=0,
+    )
     try:
+        if len(email_text) > 3000:
+            email_text = email_text[:3000] + "... [truncated]"
+        full_text = f"Subject: {subject}\n\n{email_text}" if subject else email_text
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -60,19 +56,22 @@ def summarize_one(email_text, subject, model, api_key, base_url, max_tokens):
             ],
             temperature=0.5,
             max_tokens=max_tokens,
-            timeout=60,
+            timeout=45,
         )
         return response.choices[0].message.content.strip() or "email received, nothing specific to report"
-    except Exception:
-        raise
+    finally:
+        client.close()
 
 
-def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, checkpoint_every=50, save_callback=None, echo_fn=print):
+def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, checkpoint_every=50, save_callback=None, echo_fn=print, cooldown_every=100, cooldown_secs=15):
     results = [None] * len(emails)
     errors = []
     completed = 0
-    stalled_reported = set()
-    heartbeat_count = [0]
+    last_hb = time.time()
+    last_progress = time.time()
+    last_progress_count = 0
+    warned_stall = False
+    next_cooldown = cooldown_every
 
     def job(idx):
         email = emails[idx]
@@ -84,10 +83,9 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
                 return idx, summary, email
             except Exception as e:
                 if attempt < 2:
-                    import time as _time
-                    _time.sleep(2 * (attempt + 1))  # backoff: 2s, 4s
+                    time.sleep(2 * (attempt + 1))
                 else:
-                    raise RuntimeError(f"retry exhausted: {e}")
+                    raise RuntimeError(f"retry #{attempt+1} failed: {e}")
         return idx, None, email
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -97,7 +95,7 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
         with tqdm(total=len(emails), desc="Summarizing") as pbar:
             while pending:
                 done, pending = fut_wait(
-                    pending, timeout=10, return_when=concurrent.futures.FIRST_COMPLETED
+                    pending, timeout=10, return_when=FIRST_COMPLETED
                 )
 
                 for future in done:
@@ -105,45 +103,61 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
                     try:
                         idx, summary, email = future.result()
                     except Exception as e:
-                        errors.append({"index": idx, "error": str(e)})
+                        errors.append({"index": idx, "error": str(e)[:120]})
                         email = emails[idx]
+                        email["summary"] = "error: could not summarize"
+                        email["summary_model"] = model
                     else:
                         if summary:
                             email["summary"] = summary
                             email["summary_model"] = model
                         else:
-                            email["summary"] = "email received"
+                            email["summary"] = "empty: retries exhausted"
                             email["summary_model"] = model
-                            errors.append({"index": idx, "error": "empty after retries"})
+                            errors.append({"index": idx, "error": "empty after 3 retries"})
                     results[idx] = email
                     completed += 1
-                    heartbeat_count[0] += 1
                     pbar.update(1)
 
-                if completed % checkpoint_every == 0 and save_callback:
+                if save_callback and completed and completed % checkpoint_every == 0:
                     save_callback([r for r in results if r is not None])
 
-                # heartbeat: every 30s write "." to log
-                now = int(time.time())
-                if not hasattr(summarize_batch, "_last_hb"):
-                    summarize_batch._last_hb = now
-                    summarize_batch._last_count = [0]  # mutable for closure
-                if now - summarize_batch._last_hb >= 30:
-                    echo_fn(f"  [heartbeat] {completed}/{len(emails)} done, {len(errors)} errors, {len(pending)} in-flight")
-                    summarize_batch._last_hb = now
+                # cooldown: pause to avoid rate limits
+                if completed >= next_cooldown:
+                    echo_fn(f"  [cooldown] {cooldown_secs}s pause after {completed} requests to avoid rate limits")
+                    time.sleep(cooldown_secs)
+                    next_cooldown = completed + cooldown_every
+                    last_progress = time.time()  # reset stall clock during cooldown
 
-                # staleness detection: if count unchanged for 90s, warn
-                if completed == summarize_batch._last_count[0] and pending and done:
-                    if completed not in stalled_reported:
-                        stalled_reported.add(completed)
-                        echo_fn(f"  [warning] stalled at {completed} — {len(pending)} workers may be hanging, will timeout in 60s")
-                summarize_batch._last_count[0] = completed
+                now = time.time()
 
-    # reset class-level state
-    if hasattr(summarize_batch, "_last_hb"):
-        del summarize_batch._last_hb
-    if hasattr(summarize_batch, "_last_count"):
-        del summarize_batch._last_count
+                # progress tracking
+                if completed > last_progress_count:
+                    last_progress_count = completed
+                    last_progress = now
+                    warned_stall = False
+
+                # heartbeat every 30s
+                if now - last_hb >= 30:
+                    err_sample = ""
+                    if errors:
+                        last_err = errors[-1]["error"][:80]
+                        err_sample = f" (last: {last_err})"
+                    echo_fn(f"  [heartbeat] {completed}/{len(emails)} done, {len(errors)} errors{err_sample}, {len(pending)} pending")
+                    last_hb = now
+
+                # stall warning: no progress for >60s while workers are still pending
+                stall_secs = now - last_progress
+                if completed < len(emails) and stall_secs > 60 and not warned_stall:
+                    echo_fn(f"  [stalled] no new summaries in {int(stall_secs)}s — {len(pending)} pending, {workers} workers")
+                    warned_stall = True
+
+                # auto-stop if completely stuck for >3 min — save and exit
+                if completed < len(emails) and stall_secs > 180:
+                    echo_fn(f"  [timeout] stalled for {int(stall_secs)}s — saving {completed} summaries and exiting")
+                    if save_callback:
+                        save_callback([r for r in results if r is not None])
+                    break
 
     return [r for r in results if r is not None], errors
 
@@ -160,9 +174,17 @@ def load_emails(path):
 
 
 def save_results(results, path):
-    with open(path, "w") as f:
+    tmp = path + ".tmp"
+    bak = path + ".bak"
+    with open(tmp, "w") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
+    if os.path.exists(path):
+        try:
+            os.replace(path, bak)
+        except OSError:
+            pass
+    os.replace(tmp, path)
 
 
 def main():
@@ -177,6 +199,8 @@ def main():
     parser.add_argument("--api-key", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--log", default="", help="Write output to this log file")
+    parser.add_argument("--cooldown-every", type=int, default=100, help="Pause after this many requests (default: 100)")
+    parser.add_argument("--cooldown-secs", type=int, default=15, help="Seconds to pause (default: 15)")
     args = parser.parse_args()
 
     input_path = args.input
@@ -212,8 +236,9 @@ def main():
     echo(f"Emails to summarize: {len(emails)}")
     echo(f"Model: {args.model}")
     echo(f"Workers: {args.workers} (concurrent)")
+    echo(f"Cooldown: {args.cooldown_secs}s pause every {args.cooldown_every} requests")
     echo(f"Checkpoint: every 50 completions")
-    echo(f"Estimated time: ~{len(emails) * 1.5 / args.workers / 60:.0f} min")
+    echo(f"Estimated time: ~{len(emails) * 3.5 / args.workers / 60:.0f} min")
     echo("")
 
     checkpoint_count = [0]  # mutable counter
@@ -226,7 +251,8 @@ def main():
 
     results, errors = summarize_batch(
         emails, args.model, args.api_key, args.base_url, args.max_tokens, args.workers,
-        checkpoint_every=50, save_callback=checkpoint, echo_fn=echo
+        checkpoint_every=50, save_callback=checkpoint, echo_fn=echo,
+        cooldown_every=args.cooldown_every, cooldown_secs=args.cooldown_secs
     )
 
     all_results = existing + results

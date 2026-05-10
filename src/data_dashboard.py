@@ -485,8 +485,10 @@ def tab_summarization():
                 base_url_input = gr.Textbox(label="Base URL", value=os.environ.get("OPENAI_BASE_URL", ""))
 
             with gr.Column():
-                workers_slider = gr.Slider(minimum=1, maximum=5, value=3, step=1, label="Concurrent Workers")
+                workers_slider = gr.Slider(minimum=1, maximum=10, value=3, step=1, label="Concurrent Workers")
                 max_tokens = gr.Slider(minimum=100, maximum=2000, value=800, step=100, label="Max Tokens")
+                cooldown_every = gr.Slider(minimum=50, maximum=500, value=100, step=50, label="Pause every N reqs")
+                cooldown_secs = gr.Slider(minimum=5, maximum=60, value=15, step=5, label="Pause duration (s)")
 
         with gr.Row():
             start_btn = gr.Button("Start Summarization", variant="primary")
@@ -514,15 +516,15 @@ def tab_summarization():
         model_input.change(update_cost, inputs=[model_input, max_tokens], outputs=[cost_estimate])
         max_tokens.change(update_cost, inputs=[model_input, max_tokens], outputs=[cost_estimate])
 
-        def start_summarization(model, api_key, base_url, max_tok, workers):
+        def start_summarization(model, api_key, base_url, max_tok, workers, cooldown_n, cooldown_s):
             global _process
 
             pid = _load_pid()
+            log_path = str(DATA_DIR / "summaries" / "summarize.log")
             if pid and _pid_alive(pid):
                 return "Status: **Already running (PID {})**".format(pid), tail_log()
 
             script = BASE_DIR / "scripts" / "generate_summaries.py"
-            log_path = str(DATA_DIR / "summaries" / "summarize.log")
             if not script.exists():
                 return "Status: **Error: Script not found**", ""
 
@@ -537,6 +539,8 @@ def tab_summarization():
                 "--model", model,
                 "--workers", str(int(workers)),
                 "--max-tokens", str(int(max_tok)),
+                "--cooldown-every", str(int(cooldown_n)),
+                "--cooldown-secs", str(int(cooldown_s)),
                 "--log", log_path,
             ]
 
@@ -599,7 +603,7 @@ def tab_summarization():
 
             return "Status: **Idle**", tail_log()
 
-        start_btn.click(start_summarization, inputs=[model_input, api_key_input, base_url_input, max_tokens, workers_slider], outputs=[status_text, log_area])
+        start_btn.click(start_summarization, inputs=[model_input, api_key_input, base_url_input, max_tokens, workers_slider, cooldown_every, cooldown_secs], outputs=[status_text, log_area])
         stop_btn.click(stop_summarization, outputs=[status_text, log_area])
 
         status_timer = gr.Timer(3)
