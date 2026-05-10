@@ -1,0 +1,62 @@
+# Py
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# VE
+venv/
+.env/
+.venv/
+.env.bak/
+
+# ML
+models/
+*.bin
+*.safetensors
+*.gguf
+*.pt
+
+# Data
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/summaries/*
+!data/summaries/.gitkeep
+data/training/*
+!data/training/.gitkeep
+*.parquet
+
+# Creden
+credentials.json
+token.json
+*.key
+.env
+secrets.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Gradio
+gradio_cached_examples/
+
+tasks/
+PROJECT-PLAN.md
+TASKS.md
