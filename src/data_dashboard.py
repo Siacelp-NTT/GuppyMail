@@ -446,6 +446,28 @@ def _clear_pid():
     if PID_FILE.exists():
         PID_FILE.unlink()
 
+def tail_log(n=15):
+    log_path = DATA_DIR / "summaries" / "summarize.log"
+    if not log_path.exists():
+        return ""
+    with open(log_path) as f:
+        lines = f.readlines()
+    return "".join(lines[-n:]) if lines else ""
+
+_last_count = 0
+_last_count_ts = datetime.now()
+
+def _detect_stall(current_count):
+    global _last_count, _last_count_ts
+    if current_count != _last_count:
+        _last_count = current_count
+        _last_count_ts = datetime.now()
+        return None
+    elapsed = (datetime.now() - _last_count_ts).total_seconds()
+    if elapsed > 120:
+        return f"  \n⚠ **Stuck?** — {current_count:,} summaries unchanged for {int(elapsed)}s"
+    return f""
+
 _process = None
 
 def tab_summarization():
@@ -472,6 +494,8 @@ def tab_summarization():
 
         status_text = gr.Markdown("Status: **Idle**")
         cost_estimate = gr.Markdown("")
+        log_area = gr.Code(label="Live Log", language=None, lines=10, interactive=False)
+        log_visible = gr.Checkbox(label="Show Log", value=True)
 
         def update_cost(model, max_tok):
             prices = {
@@ -495,11 +519,12 @@ def tab_summarization():
 
             pid = _load_pid()
             if pid and _pid_alive(pid):
-                return "Status: **Already running (PID {})**".format(pid)
+                return "Status: **Already running (PID {})**".format(pid), tail_log()
 
             script = BASE_DIR / "scripts" / "generate_summaries.py"
+            log_path = str(DATA_DIR / "summaries" / "summarize.log")
             if not script.exists():
-                return "Status: **Error: Script not found**"
+                return "Status: **Error: Script not found**", ""
 
             env = os.environ.copy()
             if api_key:
@@ -512,15 +537,18 @@ def tab_summarization():
                 "--model", model,
                 "--workers", str(int(workers)),
                 "--max-tokens", str(int(max_tok)),
+                "--log", log_path,
             ]
 
             try:
+                # Clear old log
+                Path(log_path).write_text("")
                 _process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 _save_pid(_process.pid)
-                return "Status: **Running (PID {})**".format(_process.pid)
+                return "Status: **Running (PID {})**".format(_process.pid), tail_log()
             except Exception as e:
                 _process = None
-                return "Status: **Error: {}**".format(e)
+                return "Status: **Error: {}**".format(e), tail_log()
 
         def stop_summarization():
             global _process
@@ -535,46 +563,47 @@ def tab_summarization():
 
             if pid and _pid_alive(pid):
                 try:
-                    os.kill(pid, 15)  # SIGTERM
+                    os.kill(pid, 15)
                 except OSError:
                     pass
                 killed = True
 
             _clear_pid()
-            return "Status: **{}**".format("Stopped" if killed else "No process running")
+            return "Status: **{}**".format("Stopped" if killed else "No process running"), tail_log()
 
         def poll_status():
-            global _process
+            global _process, _last_count
 
             summarized = count_jsonl(SUM_DIR / "en_summaries.jsonl")
             cleaned = count_jsonl(PROC_DIR / "cleaned_emails.jsonl")
+            stall = _detect_stall(summarized)
 
             pid = _load_pid()
 
             if pid and _pid_alive(pid):
                 pct = round(summarized / cleaned * 100, 1) if cleaned > 0 else 0
-                return "Status: **Running (PID {})** — {:,}/{:,} ({:.1f}%)".format(pid, summarized, cleaned, pct)
+                return "Status: **Running (PID {})** — {:,}/{:,} ({:.1f}%){}".format(pid, summarized, cleaned, pct, stall), tail_log()
 
             if pid and not _pid_alive(pid):
                 _clear_pid()
                 _process = None
-                return "Status: **Finished** — {:,} summaries".format(summarized)
+                return "Status: **Finished** — {:,} summaries".format(summarized), tail_log()
 
             if _process:
                 if _process.poll() is None:
                     pct = round(summarized / cleaned * 100, 1) if cleaned > 0 else 0
-                    return "Status: **Running (PID {})** — {:,}/{:,} ({:.1f}%)".format(_process.pid, summarized, cleaned, pct)
+                    return "Status: **Running (PID {})** — {:,}/{:,} ({:.1f}%){}".format(_process.pid, summarized, cleaned, pct, stall), tail_log()
                 else:
                     _process = None
-                    return "Status: **Finished** — {:,} summaries".format(summarized)
+                    return "Status: **Finished** — {:,} summaries".format(summarized), tail_log()
 
-            return "Status: **Idle**"
+            return "Status: **Idle**", tail_log()
 
-        start_btn.click(start_summarization, inputs=[model_input, api_key_input, base_url_input, max_tokens, workers_slider], outputs=[status_text])
-        stop_btn.click(stop_summarization, outputs=[status_text])
+        start_btn.click(start_summarization, inputs=[model_input, api_key_input, base_url_input, max_tokens, workers_slider], outputs=[status_text, log_area])
+        stop_btn.click(stop_summarization, outputs=[status_text, log_area])
 
         status_timer = gr.Timer(3)
-        status_timer.tick(poll_status, outputs=[status_text])
+        status_timer.tick(poll_status, outputs=[status_text, log_area])
 
         update_cost("deepseek-v4-flash", 800)
 
