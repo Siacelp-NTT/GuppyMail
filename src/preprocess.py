@@ -11,6 +11,7 @@ Usage:
 import re
 import json
 import os
+import hashlib
 from tqdm import tqdm
 
 
@@ -168,7 +169,13 @@ def detect_language(text: str) -> str:
     return 'en'
 
 
-def process_dataset(input_path: str, output_path: str, translate_vi: bool = False):
+def dedupe_key(text: str) -> str:
+    """Stable hash for exact cleaned-body deduplication."""
+    normalized = re.sub(r'\s+', ' ', text).strip().lower()
+    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+
+def process_dataset(input_path: str, output_path: str, translate_vi: bool = False, dedupe: bool = True):
     """
     Process entire dataset from JSONL input to JSONL output.
     
@@ -176,13 +183,16 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
         input_path: Path to raw emails JSONL
         output_path: Path to save cleaned emails JSONL
         translate_vi: If True, auto-translate Vietnamese emails to English
+        dedupe: If True, skip duplicate cleaned bodies after preprocessing
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     cleaned_count = 0
     skipped_count = 0
+    duplicate_count = 0
     translated_count = 0
     results = []
+    seen_cleaned = set()
 
     with open(input_path, 'r') as f:
         lines = f.readlines()
@@ -209,6 +219,13 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
             cleaned = translate_vietnamese_to_english(cleaned)
             translated_count += 1
 
+        if dedupe:
+            key = dedupe_key(cleaned)
+            if key in seen_cleaned:
+                duplicate_count += 1
+                continue
+            seen_cleaned.add(key)
+
         record = {
             'original_text': raw_text,
             'cleaned_body': cleaned,
@@ -229,6 +246,8 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
     print(f"\nProcessing complete:")
     print(f"  Cleaned:   {cleaned_count}")
     print(f"  Skipped:   {skipped_count}")
+    if dedupe:
+        print(f"  Duplicates:{duplicate_count}")
     if translate_vi:
         print(f"  Translated: {translated_count}")
     print(f"  Saved to:  {output_path}")
