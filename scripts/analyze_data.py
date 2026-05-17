@@ -37,6 +37,8 @@ CLEAN_SUM_PATH = DATA_DIR / "summaries" / "en_summaries.clean.jsonl"
 TRAIN_PATH = DATA_DIR / "training" / "train.jsonl"
 VAL_PATH = DATA_DIR / "training" / "val.jsonl"
 TEST_PATH = DATA_DIR / "training" / "test.jsonl"
+TOKENIZER_PATH = DATA_DIR / "training" / "tokenizer.json"
+TOKENIZER_METRICS_PATH = DATA_DIR / "training" / "tokenizer_metrics.json"
 CHARTS_DIR = DATA_DIR / "charts"
 REPORT_DIR = BASE_DIR / "report"
 
@@ -74,6 +76,13 @@ def text_of(record):
 
 def summary_of(record):
     return record.get("summary", "")
+
+
+def token_count_of(record):
+    value = record.get("token_count")
+    if isinstance(value, int):
+        return value
+    return 0
 
 
 def norm_text(text):
@@ -249,19 +258,25 @@ def chart_splits(train, val, test):
     splits = {"train": train, "val": val, "test": test}
     labels = list(splits)
     counts = [len(splits[k]) for k in labels]
-    med_email = [stats([len(text_of(r)) for r in splits[k]])["median"] for k in labels]
-    med_summary = [stats([len(summary_of(r)) for r in splits[k]])["median"] for k in labels]
+    med_text = [stats([len(text_of(r)) for r in splits[k]])["median"] for k in labels]
+    has_token_counts = any(token_count_of(r) for rows in splits.values() for r in rows)
+    if has_token_counts:
+        med_second = [stats([token_count_of(r) for r in splits[k] if token_count_of(r)])["median"] for k in labels]
+        second_label = "tokens"
+    else:
+        med_second = [stats([len(summary_of(r)) for r in splits[k]])["median"] for k in labels]
+        second_label = "summary"
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     axes[0].bar(labels, counts, color=["#16a34a", "#2563eb", "#ca8a04"])
     axes[0].set_title("Training Split Sizes")
     axes[0].set_ylabel("Rows")
     style_axes(axes[0])
     x = range(len(labels))
-    axes[1].bar([i - 0.18 for i in x], med_email, width=0.36, label="email", color="#0f766e")
-    axes[1].bar([i + 0.18 for i in x], med_summary, width=0.36, label="summary", color="#7c3aed")
+    axes[1].bar([i - 0.18 for i in x], med_text, width=0.36, label="text chars", color="#0f766e")
+    axes[1].bar([i + 0.18 for i in x], med_second, width=0.36, label=second_label, color="#7c3aed")
     axes[1].set_xticks(list(x), labels)
-    axes[1].set_title("Median Length by Split")
-    axes[1].set_ylabel("Characters")
+    axes[1].set_title("Median Size by Split")
+    axes[1].set_ylabel("Characters / tokens")
     axes[1].legend()
     style_axes(axes[1])
     return save_fig(fig, "report_split_balance.png")
@@ -311,6 +326,39 @@ def chart_top_terms(clean_summaries):
     return save_fig(fig, "report_top_summary_terms.png")
 
 
+def chart_tokenizer_lengths(train, val, test, tokenization):
+    splits = {"train": train, "eval": val, "test": test}
+    split_lengths = {name: [token_count_of(r) for r in rows if token_count_of(r)] for name, rows in splits.items()}
+    if not any(split_lengths.values()):
+        return save_fig(plt.figure(figsize=(7, 4)), "report_tokenizer_lengths.png")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    colors = {"train": "#16a34a", "eval": "#2563eb", "test": "#ca8a04"}
+    for split, lengths in split_lengths.items():
+        if lengths:
+            axes[0].hist(lengths, bins=40, alpha=0.45, label=split, color=colors[split])
+    max_seq_len = tokenization.get("max_seq_len", 0)
+    if max_seq_len:
+        axes[0].axvline(max_seq_len, color="#dc2626", linestyle="--", linewidth=1.5, label=f"max={max_seq_len}")
+    axes[0].set_title("Tokenized Sample Lengths")
+    axes[0].set_xlabel("Tokens per ChatML sample")
+    axes[0].set_ylabel("Rows")
+    axes[0].legend()
+    style_axes(axes[0])
+
+    labels = list(splits)
+    rates = []
+    for split, rows in splits.items():
+        truncated = sum(1 for r in rows if r.get("truncated"))
+        rates.append((truncated / len(rows) * 100) if rows else 0)
+    axes[1].bar(labels, rates, color=[colors[label] for label in labels])
+    axes[1].set_title("Truncation Rate by Split")
+    axes[1].set_xlabel("Split")
+    axes[1].set_ylabel("Rows truncated (%)")
+    style_axes(axes[1])
+    return save_fig(fig, "report_tokenizer_lengths.png")
+
+
 def write_statistics_csv(metrics):
     path = REPORT_DIR / "dataset_statistics.csv"
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -355,6 +403,9 @@ def write_markdown(metrics, charts):
         f"- Flagged generated summaries: {metrics['flagged_summaries']:,}.",
         f"- Cleaned near-duplicate rows by first 200 characters: {metrics['cleaned_prefix_duplicates']:,}.",
         f"- Median compression ratio: {metrics['compression_ratio']['median']}.",
+        f"- Tokenizer vocabulary size: {metrics['tokenization']['vocab_size']:,}.",
+        f"- Tokenized max sequence length: {metrics['tokenization']['max_seq_len']:,}.",
+        f"- Tokenized rows truncated: {metrics['tokenization']['truncated_rows']:,} ({metrics['tokenization']['truncated_pct']}%).",
         "",
         "## Generated Figures",
         "",
@@ -374,6 +425,20 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
     cleaned_prefix_hashes = [hash_text(norm_text(text_of(r))[:200]) for r in cleaned]
     flagged = sum(1 for r in summaries if summary_flags(summary_of(r)))
     coverage = (len(clean_summaries) / len(cleaned) * 100) if cleaned else 0
+    tokenizer_metrics = {}
+    if TOKENIZER_METRICS_PATH.exists():
+        try:
+            tokenizer_metrics = json.loads(TOKENIZER_METRICS_PATH.read_text())
+        except json.JSONDecodeError:
+            tokenizer_metrics = {}
+    token_lengths = [token_count_of(r) for r in train + val + test if token_count_of(r)]
+    split_token_lengths = {
+        "train": [token_count_of(r) for r in train if token_count_of(r)],
+        "val": [token_count_of(r) for r in val if token_count_of(r)],
+        "test": [token_count_of(r) for r in test if token_count_of(r)],
+    }
+    truncated_rows = sum(1 for r in train + val + test if r.get("truncated"))
+    total_tokenized = len(train) + len(val) + len(test)
     return {
         "counts": {
             "raw": len(raw),
@@ -391,6 +456,17 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
         "coverage_pct": round(coverage, 2),
         "flagged_summaries": flagged,
         "cleaned_prefix_duplicates": len(cleaned_prefix_hashes) - len(set(cleaned_prefix_hashes)),
+        "tokenization": {
+            "vocab_size": int(tokenizer_metrics.get("vocab_size") or 0),
+            "max_seq_len": int(tokenizer_metrics.get("max_seq_len") or 0),
+            "rows": total_tokenized,
+            "truncated_rows": truncated_rows,
+            "truncated_pct": round((truncated_rows / total_tokenized * 100) if total_tokenized else 0, 2),
+            "token_length": stats(token_lengths),
+            "train_token_length": stats(split_token_lengths["train"]),
+            "val_token_length": stats(split_token_lengths["val"]),
+            "test_token_length": stats(split_token_lengths["test"]),
+        },
     }
 
 
@@ -413,6 +489,7 @@ def generate_report():
         chart_splits(train, val, test),
         chart_duplicates(raw, cleaned, summaries),
         chart_top_terms(clean_summaries),
+        chart_tokenizer_lengths(train, val, test, metrics["tokenization"]),
     ]
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)

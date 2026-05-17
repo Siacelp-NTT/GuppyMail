@@ -40,10 +40,11 @@ PROC_DIR = DATA_DIR / "processed"
 SUM_DIR = DATA_DIR / "summaries"
 TRAIN_DIR = DATA_DIR / "training"
 CHARTS_DIR = DATA_DIR / "charts"
+REPORT_DIR = BASE_DIR / "report"
 STATE_FILE = DATA_DIR / "pipeline_state.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
-for d in [DATA_DIR, RAW_DIR, PROC_DIR, SUM_DIR, TRAIN_DIR, CHARTS_DIR]:
+for d in [DATA_DIR, RAW_DIR, PROC_DIR, SUM_DIR, TRAIN_DIR, CHARTS_DIR, REPORT_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ─── State ───────────────────────────────────────────────────────────────────
@@ -520,6 +521,7 @@ REPORT_CHART_FILES = [
     CHARTS_DIR / "report_split_balance.png",
     CHARTS_DIR / "report_duplicate_diagnostics.png",
     CHARTS_DIR / "report_top_summary_terms.png",
+    CHARTS_DIR / "report_tokenizer_lengths.png",
 ]
 
 def report_chart_paths():
@@ -934,21 +936,200 @@ def tokenizer_preview():
         return "{}"
     return json.dumps(rows[0], indent=2, ensure_ascii=False)
 
+def numeric_stats(values):
+    if not values:
+        return {"min": 0, "median": 0, "mean": 0, "p95": 0, "max": 0}
+    values = sorted(values)
+    p95_idx = min(len(values) - 1, max(0, int(len(values) * 0.95) - 1))
+    return {
+        "min": values[0],
+        "median": values[len(values) // 2],
+        "mean": round(sum(values) / len(values), 2),
+        "p95": values[p95_idx],
+        "max": values[-1],
+    }
+
+def chart_tokenizer_lengths(split_lengths, split_truncated, max_seq_len):
+    if not any(split_lengths.values()):
+        return None
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4), facecolor=STYLE["bg"])
+    colors = {"train": STYLE["accent"], "eval": STYLE["accent2"], "test": "#e07a5f"}
+
+    for split, lengths in split_lengths.items():
+        if lengths:
+            axes[0].hist(lengths, bins=40, alpha=0.45, label=split, color=colors.get(split, "#81b29a"))
+    axes[0].axvline(max_seq_len, color="#f2cc8f", linestyle="--", linewidth=1.5, label=f"max={max_seq_len}")
+    axes[0].set_title("Token Length Distribution")
+    axes[0].set_xlabel("Tokens per ChatML sample")
+    axes[0].set_ylabel("Rows")
+    axes[0].legend()
+    apply_style(axes[0])
+
+    labels = list(split_lengths.keys())
+    rates = []
+    for split in labels:
+        total = len(split_lengths[split])
+        rates.append((split_truncated.get(split, 0) / total * 100) if total else 0)
+    axes[1].bar(labels, rates, color=[colors.get(split, "#81b29a") for split in labels])
+    axes[1].set_title("Truncation Rate by Split")
+    axes[1].set_xlabel("Split")
+    axes[1].set_ylabel("Rows truncated (%)")
+    apply_style(axes[1])
+
+    fig.tight_layout()
+    path = CHARTS_DIR / "report_tokenizer_lengths.png"
+    fig.savefig(path, dpi=140, facecolor=STYLE["bg"])
+    plt.close(fig)
+    return str(path)
+
+def analyze_tokenizer_artifacts():
+    tokenizer_path = TRAIN_DIR / "tokenizer.json"
+    metrics_path = TRAIN_DIR / "tokenizer_metrics.json"
+    if not tokenizer_path.exists():
+        return [["Tokenizer", "missing"]], [], None, "Train tokenizer first."
+
+    try:
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    except Exception as exc:
+        return [["Tokenizer", f"unreadable: {exc}"]], [], None, "Tokenizer analysis failed."
+
+    existing_metrics = {}
+    if metrics_path.exists():
+        try:
+            existing_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing_metrics = {}
+
+    max_seq_len = int(existing_metrics.get("max_seq_len") or 512)
+    split_paths = {
+        "train": TRAIN_DIR / "train.jsonl",
+        "eval": TRAIN_DIR / "eval.jsonl",
+        "test": TRAIN_DIR / "test.jsonl",
+    }
+    split_lengths = {}
+    split_truncated = {}
+    split_rows = []
+    missing_markers_total = 0
+
+    for split, path in split_paths.items():
+        rows = load_jsonl(path)
+        lengths = []
+        truncated = 0
+        missing_markers = 0
+
+        for row in rows:
+            text = row.get("text", "")
+            token_count = row.get("token_count")
+            if not isinstance(token_count, int):
+                token_count = len(tokenizer.encode(text).ids)
+            lengths.append(token_count)
+            truncated += int(bool(row.get("truncated")))
+            missing_markers += int(
+                "<|im_start|>user" not in text
+                or "<|im_start|>assistant" not in text
+                or "<|im_end|>" not in text
+            )
+
+        split_lengths[split] = lengths
+        split_truncated[split] = truncated
+        missing_markers_total += missing_markers
+        stats = numeric_stats(lengths)
+        split_rows.append([
+            split,
+            f"{len(rows):,}",
+            f"{truncated:,}",
+            f"{(truncated / len(rows) * 100):.2f}%" if rows else "0.00%",
+            stats["median"],
+            stats["mean"],
+            stats["p95"],
+            stats["max"],
+            f"{missing_markers:,}",
+        ])
+
+    all_lengths = [value for values in split_lengths.values() for value in values]
+    all_truncated = sum(split_truncated.values())
+    all_rows = len(all_lengths)
+    overall = numeric_stats(all_lengths)
+    chart_path = chart_tokenizer_lengths(split_lengths, split_truncated, max_seq_len)
+
+    metrics = {
+        "vocab_size": tokenizer.get_vocab_size(),
+        "max_seq_len": max_seq_len,
+        "rows": all_rows,
+        "truncated_rows": all_truncated,
+        "truncated_pct": round((all_truncated / all_rows * 100) if all_rows else 0, 2),
+        "missing_marker_rows": missing_markers_total,
+        "token_length": overall,
+        "splits": {
+            split: {
+                "rows": len(split_lengths[split]),
+                "truncated_rows": split_truncated[split],
+                "token_length": numeric_stats(split_lengths[split]),
+            }
+            for split in split_lengths
+        },
+    }
+
+    (REPORT_DIR / "tokenizer_analysis.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    (REPORT_DIR / "tokenizer_analysis.md").write_text(
+        "\n".join([
+            "# Tokenizer Analysis",
+            "",
+            f"- Vocabulary size: {metrics['vocab_size']:,}",
+            f"- Max sequence length: {metrics['max_seq_len']:,}",
+            f"- Total tokenized rows: {metrics['rows']:,}",
+            f"- Truncated rows: {metrics['truncated_rows']:,} ({metrics['truncated_pct']}%)",
+            f"- Missing ChatML marker rows: {metrics['missing_marker_rows']:,}",
+            f"- Median / P95 / Max tokens: {overall['median']} / {overall['p95']} / {overall['max']}",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    summary_rows = [
+        ["Vocabulary size", f"{metrics['vocab_size']:,}"],
+        ["Max sequence length", f"{max_seq_len:,}"],
+        ["Total tokenized rows", f"{all_rows:,}"],
+        ["Truncated rows", f"{all_truncated:,} ({metrics['truncated_pct']}%)"],
+        ["Rows missing ChatML markers", f"{missing_markers_total:,}"],
+        ["Median tokens", f"{overall['median']:,}"],
+        ["Mean tokens", f"{overall['mean']:,}"],
+        ["P95 tokens", f"{overall['p95']:,}"],
+        ["Max tokens", f"{overall['max']:,}"],
+        ["Report JSON", str((REPORT_DIR / "tokenizer_analysis.json").relative_to(BASE_DIR))],
+        ["Report Markdown", str((REPORT_DIR / "tokenizer_analysis.md").relative_to(BASE_DIR))],
+    ]
+
+    note = "Tokenizer analysis complete. Use this to justify context length, truncation rate, and split validity in the report."
+    return summary_rows, split_rows, chart_path, note
+
 def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_pct, test_pct, seed):
     source = TOKENIZER_SOURCE_FILES.get(source_name, SUM_DIR / "en_summaries.clean.jsonl")
     if not source.exists():
+        analysis_rows, split_rows, chart_path, note = analyze_tokenizer_artifacts()
         return (
             f"Source file not found: {source.relative_to(BASE_DIR)}",
             tokenizer_status_rows(),
             tokenizer_preview(),
+            analysis_rows,
+            split_rows,
+            chart_path,
+            note,
         )
 
     script = BASE_DIR / "scripts" / "train_tokenizer.py"
     if not script.exists():
+        analysis_rows, split_rows, chart_path, note = analyze_tokenizer_artifacts()
         return (
             "Script not found: scripts/train_tokenizer.py",
             tokenizer_status_rows(),
             tokenizer_preview(),
+            analysis_rows,
+            split_rows,
+            chart_path,
+            note,
         )
 
     cmd = [
@@ -965,10 +1146,15 @@ def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_p
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
+        analysis_rows, split_rows, chart_path, note = analyze_tokenizer_artifacts()
         return (
             "Tokenizer preparation timed out after 10 minutes.",
             tokenizer_status_rows(),
             tokenizer_preview(),
+            analysis_rows,
+            split_rows,
+            chart_path,
+            note,
         )
 
     if result.returncode != 0:
@@ -983,16 +1169,21 @@ def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_p
         save_state(state)
         output = result.stdout.strip()
 
+    analysis_rows, split_rows, chart_path, note = analyze_tokenizer_artifacts()
     return (
         output,
         tokenizer_status_rows(),
         tokenizer_preview(),
+        analysis_rows,
+        split_rows,
+        chart_path,
+        note,
     )
 
 def tab_tokenizer():
     with gr.Tab("Train Tokenizer"):
         gr.Markdown(
-            "Prepare Task 1.6 outputs for GuppyLM: a 4096-token BPE tokenizer "
+            "Prepare a 4096-token BPE tokenizer "
             "and ChatML JSONL splits with a `text` field."
         )
 
@@ -1006,7 +1197,7 @@ def tab_tokenizer():
             max_seq_len = gr.Slider(
                 minimum=128,
                 maximum=512,
-                value=128,
+                value=512,
                 step=128,
                 label="Max sequence length",
             )
@@ -1017,12 +1208,13 @@ def tab_tokenizer():
             seed = gr.Number(label="Shuffle seed", value=42, precision=0)
 
         gr.Markdown(
-            "Keep `Max sequence length` equal to the notebook's `GuppyConfig.max_seq_len`. "
-            "The current downloaded notebook uses `128`."
+            "`512` is the project default for email summarization. Keep this value "
+            "matched with the future training model's `GuppyConfig.max_seq_len`."
         )
 
         with gr.Row():
             refresh_btn = gr.Button("Refresh Status")
+            analyze_btn = gr.Button("Analyze Tokenized Data")
             prepare_btn = gr.Button("Train Tokenizer + Build ChatML Splits", variant="primary")
 
         status = gr.Dataframe(
@@ -1034,14 +1226,32 @@ def tab_tokenizer():
         output = gr.Textbox(label="Output", lines=10, interactive=False)
         preview = gr.Code(label="First Train Row Preview", value=tokenizer_preview(), language="json", lines=16)
 
+        gr.HTML("<hr style='border:none;border-top:1px solid #2a2a3e;margin:16px 0'>")
+        analysis_metrics = gr.Dataframe(
+            headers=["Metric", "Value"],
+            label="Tokenizer Analysis",
+            interactive=False,
+        )
+        split_metrics = gr.Dataframe(
+            headers=["Split", "Rows", "Truncated", "Truncated %", "Median Tokens", "Mean Tokens", "P95 Tokens", "Max Tokens", "Missing Markers"],
+            label="Split Token Diagnostics",
+            interactive=False,
+        )
+        token_chart = gr.Image(label="Token Length and Truncation Chart")
+        analysis_note = gr.Markdown("")
+
         refresh_btn.click(
             lambda: (tokenizer_status_rows(), tokenizer_preview()),
             outputs=[status, preview],
         )
+        analyze_btn.click(
+            analyze_tokenizer_artifacts,
+            outputs=[analysis_metrics, split_metrics, token_chart, analysis_note],
+        )
         prepare_btn.click(
             prepare_tokenizer_from_dashboard,
             inputs=[source_sel, vocab_size, max_seq_len, val_pct, test_pct, seed],
-            outputs=[output, status, preview],
+            outputs=[output, status, preview, analysis_metrics, split_metrics, token_chart, analysis_note],
         )
 
 # ─── Tab: Charts ─────────────────────────────────────────────────────────────
@@ -1076,10 +1286,11 @@ def tab_charts():
         with gr.Row():
             r7 = gr.Image(label="Duplicate Diagnostics", value=report_paths[6])
             r8 = gr.Image(label="Top Summary Terms", value=report_paths[7])
+        r9 = gr.Image(label="Tokenizer Lengths", value=report_paths[8])
 
         analytics_btn.click(
             generate_full_analytics,
-            outputs=[analytics_out, r1, r2, r3, r4, r5, r6, r7, r8],
+            outputs=[analytics_out, r1, r2, r3, r4, r5, r6, r7, r8, r9],
         )
 
         auto_timer = gr.Timer(30)

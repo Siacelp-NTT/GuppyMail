@@ -133,3 +133,4 @@ Run `python scripts/evaluate.py`.
 - [GuppyLM HuggingFace](https://huggingface.co/arman-bd/guppylm-9M)
 - [Article: "Build Your Own LLM in 5 Minutes"](https://arman-bd.medium.com/build-your-own-llm-in-5-minutes-i-made-mine-talk-like-a-fish-e20c338a3d14)
 - [Datasets](https://huggingface.co/datasets/jacquelinehe/enron-emails)
+- [Proccessed Data](https://huggingface.co/datasets/Siacelp/eron-mails-summarized)
