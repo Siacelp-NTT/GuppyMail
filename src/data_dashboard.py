@@ -511,6 +511,35 @@ def chart_summary_len():
 def render_charts():
     return chart_length_dist(), chart_funnel(), chart_summary_len()
 
+REPORT_CHART_FILES = [
+    CHARTS_DIR / "report_pipeline_counts.png",
+    CHARTS_DIR / "report_length_distributions.png",
+    CHARTS_DIR / "report_cleaning_retention.png",
+    CHARTS_DIR / "report_summary_compression.png",
+    CHARTS_DIR / "report_quality_flags.png",
+    CHARTS_DIR / "report_split_balance.png",
+    CHARTS_DIR / "report_duplicate_diagnostics.png",
+    CHARTS_DIR / "report_top_summary_terms.png",
+]
+
+def report_chart_paths():
+    return [str(p) if p.exists() else None for p in REPORT_CHART_FILES]
+
+def generate_full_analytics():
+    script = BASE_DIR / "scripts" / "analyze_data.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+    except subprocess.TimeoutExpired:
+        return ("Analytics generation timed out after 240 seconds.", *report_chart_paths())
+    if result.returncode != 0:
+        return (f"Analytics generation failed:\n{result.stderr.strip()}", *report_chart_paths())
+    return (result.stdout.strip(), *report_chart_paths())
+
 # ─── Pipeline actions ────────────────────────────────────────────────────────
 
 def run_download(n_emails):
@@ -862,6 +891,8 @@ def tab_quality():
 
 def tab_charts():
     with gr.Tab("Charts"):
+        gr.Markdown("Quick dashboard charts plus report-ready analytics artifacts for the paper/document.")
+
         with gr.Row():
             c1 = gr.Image(label="Length Distribution", show_label=False)
             c2 = gr.Image(label="Pipeline", show_label=False)
@@ -870,6 +901,29 @@ def tab_charts():
 
         refresh_btn = gr.Button("Refresh", variant="primary")
         refresh_btn.click(render_charts, outputs=[c1, c2, c3])
+
+        gr.HTML("<hr style='border:none;border-top:1px solid #2a2a3e;margin:16px 0'>")
+        analytics_btn = gr.Button("Generate Full Report Analytics", variant="primary")
+        analytics_out = gr.Textbox(label="Analytics Output", lines=8, interactive=False)
+
+        report_paths = report_chart_paths()
+        with gr.Row():
+            r1 = gr.Image(label="Pipeline Counts", value=report_paths[0])
+            r2 = gr.Image(label="Length Distributions", value=report_paths[1])
+        with gr.Row():
+            r3 = gr.Image(label="Cleaning Retention", value=report_paths[2])
+            r4 = gr.Image(label="Summary Compression", value=report_paths[3])
+        with gr.Row():
+            r5 = gr.Image(label="Quality Flags", value=report_paths[4])
+            r6 = gr.Image(label="Split Balance", value=report_paths[5])
+        with gr.Row():
+            r7 = gr.Image(label="Duplicate Diagnostics", value=report_paths[6])
+            r8 = gr.Image(label="Top Summary Terms", value=report_paths[7])
+
+        analytics_btn.click(
+            generate_full_analytics,
+            outputs=[analytics_out, r1, r2, r3, r4, r5, r6, r7, r8],
+        )
 
         auto_timer = gr.Timer(30)
         auto_timer.tick(render_charts, outputs=[c1, c2, c3])
