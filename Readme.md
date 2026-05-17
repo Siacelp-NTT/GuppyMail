@@ -99,9 +99,9 @@ email-summarizer/
 | **Attention heads** | 6 |
 | **FFN** | 768 (ReLU) |
 | **Vocabulary** | 4,096 BPE tokens |
-| **Max sequence** | 128 tokens |
+| **Max sequence** | 512 tokens |
 | **Model size** | ~10MB |
-| **Training time** | ~5 minutes (T4 GPU) |
+| **Training time** | Depends |
 
 No GQA, no RoPE, no SwiGLU. As simple as it gets.
 
