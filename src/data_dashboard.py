@@ -669,6 +669,7 @@ DATASET_FILES = {
     "clean summaries": SUM_DIR / "en_summaries.clean.jsonl",
     "bad summaries": SUM_DIR / "bad_summaries.jsonl",
     "train": TRAIN_DIR / "train.jsonl",
+    "eval": TRAIN_DIR / "eval.jsonl",
     "validation": TRAIN_DIR / "val.jsonl",
     "test": TRAIN_DIR / "test.jsonl",
 }
@@ -886,6 +887,162 @@ def tab_quality():
         missing_btn.click(export_missing_cleaned, outputs=[action_out])
         train_btn.click(generate_training_files, inputs=[source_sel, val_pct, test_pct, seed, max_summary_chars], outputs=[train_out])
         sync_btn.click(sync_pipeline_state, outputs=[action_out])
+
+# ─── Tab: Tokenizer ──────────────────────────────────────────────────────────
+
+TOKENIZER_SOURCE_FILES = {
+    "clean summaries": SUM_DIR / "en_summaries.clean.jsonl",
+    "all summaries": SUM_DIR / "en_summaries.jsonl",
+}
+
+def tokenizer_status_rows():
+    rows = [
+        ["Clean summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.clean.jsonl'):,}"],
+        ["All summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.jsonl'):,}"],
+        ["Train ChatML", f"{count_jsonl(TRAIN_DIR / 'train.jsonl'):,}"],
+        ["Eval ChatML", f"{count_jsonl(TRAIN_DIR / 'eval.jsonl'):,}"],
+        ["Validation alias", f"{count_jsonl(TRAIN_DIR / 'val.jsonl'):,}"],
+        ["Test ChatML", f"{count_jsonl(TRAIN_DIR / 'test.jsonl'):,}"],
+    ]
+
+    tokenizer_path = TRAIN_DIR / "tokenizer.json"
+    if tokenizer_path.exists():
+        vocab = "unknown"
+        try:
+            from tokenizers import Tokenizer
+            vocab = f"{Tokenizer.from_file(str(tokenizer_path)).get_vocab_size():,}"
+        except Exception as exc:
+            vocab = f"unreadable: {exc}"
+        rows.append(["Tokenizer", f"{tokenizer_path.relative_to(BASE_DIR)} ({vocab} tokens)"])
+    else:
+        rows.append(["Tokenizer", "missing"])
+
+    metrics_path = TRAIN_DIR / "tokenizer_metrics.json"
+    if metrics_path.exists():
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            rows.append(["Max sequence length", str(metrics.get("max_seq_len", "unknown"))])
+            rows.append(["Truncated rows", f"{int(metrics.get('truncated_rows', 0)):,}"])
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+    return rows
+
+def tokenizer_preview():
+    rows = load_jsonl(TRAIN_DIR / "train.jsonl", limit=1)
+    if not rows:
+        return "{}"
+    return json.dumps(rows[0], indent=2, ensure_ascii=False)
+
+def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_pct, test_pct, seed):
+    source = TOKENIZER_SOURCE_FILES.get(source_name, SUM_DIR / "en_summaries.clean.jsonl")
+    if not source.exists():
+        return (
+            f"Source file not found: {source.relative_to(BASE_DIR)}",
+            tokenizer_status_rows(),
+            tokenizer_preview(),
+        )
+
+    script = BASE_DIR / "scripts" / "train_tokenizer.py"
+    if not script.exists():
+        return (
+            "Script not found: scripts/train_tokenizer.py",
+            tokenizer_status_rows(),
+            tokenizer_preview(),
+        )
+
+    cmd = [
+        sys.executable, str(script),
+        "--input", str(source),
+        "--output-dir", str(TRAIN_DIR),
+        "--vocab-size", str(int(vocab_size)),
+        "--max-seq-len", str(int(max_seq_len)),
+        "--val-pct", str(float(val_pct)),
+        "--test-pct", str(float(test_pct)),
+        "--seed", str(int(seed)),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return (
+            "Tokenizer preparation timed out after 10 minutes.",
+            tokenizer_status_rows(),
+            tokenizer_preview(),
+        )
+
+    if result.returncode != 0:
+        output = f"Tokenizer preparation failed:\n{result.stderr.strip()}"
+    else:
+        state = init_state()
+        state["stages"]["format"] = {
+            "status": "done",
+            "count": count_jsonl(TRAIN_DIR / "train.jsonl"),
+            "time": datetime.now().isoformat(),
+        }
+        save_state(state)
+        output = result.stdout.strip()
+
+    return (
+        output,
+        tokenizer_status_rows(),
+        tokenizer_preview(),
+    )
+
+def tab_tokenizer():
+    with gr.Tab("Train Tokenizer"):
+        gr.Markdown(
+            "Prepare Task 1.6 outputs for GuppyLM: a 4096-token BPE tokenizer "
+            "and ChatML JSONL splits with a `text` field."
+        )
+
+        with gr.Row():
+            source_sel = gr.Dropdown(
+                choices=list(TOKENIZER_SOURCE_FILES.keys()),
+                value="clean summaries",
+                label="Source summaries",
+            )
+            vocab_size = gr.Number(label="Vocabulary size", value=4096, precision=0)
+            max_seq_len = gr.Slider(
+                minimum=128,
+                maximum=512,
+                value=128,
+                step=128,
+                label="Max sequence length",
+            )
+
+        with gr.Row():
+            val_pct = gr.Slider(minimum=1, maximum=25, value=10, step=1, label="Eval/validation %")
+            test_pct = gr.Slider(minimum=0, maximum=20, value=5, step=1, label="Test %")
+            seed = gr.Number(label="Shuffle seed", value=42, precision=0)
+
+        gr.Markdown(
+            "Keep `Max sequence length` equal to the notebook's `GuppyConfig.max_seq_len`. "
+            "The current downloaded notebook uses `128`."
+        )
+
+        with gr.Row():
+            refresh_btn = gr.Button("Refresh Status")
+            prepare_btn = gr.Button("Train Tokenizer + Build ChatML Splits", variant="primary")
+
+        status = gr.Dataframe(
+            headers=["Artifact", "Status"],
+            value=tokenizer_status_rows(),
+            label="Tokenizer / Training Artifacts",
+            interactive=False,
+        )
+        output = gr.Textbox(label="Output", lines=10, interactive=False)
+        preview = gr.Code(label="First Train Row Preview", value=tokenizer_preview(), language="json", lines=16)
+
+        refresh_btn.click(
+            lambda: (tokenizer_status_rows(), tokenizer_preview()),
+            outputs=[status, preview],
+        )
+        prepare_btn.click(
+            prepare_tokenizer_from_dashboard,
+            inputs=[source_sel, vocab_size, max_seq_len, val_pct, test_pct, seed],
+            outputs=[output, status, preview],
+        )
 
 # ─── Tab: Charts ─────────────────────────────────────────────────────────────
 
@@ -1255,6 +1412,7 @@ def main():
         tab_pipeline()
         tab_data()
         tab_quality()
+        tab_tokenizer()
         tab_charts()
         tab_summarization()
         tab_system()
