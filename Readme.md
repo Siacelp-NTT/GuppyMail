@@ -46,9 +46,9 @@ python scripts/generate_summaries.py
 ### 3. Train the Model
 
 Open `notebooks/train_email_guppylm.ipynb` in **Google Colab** (free GPU):
-1. Upload training data from `data/training/`
+1. Upload `training_quality.zip`
 2. Run all cells (~5 minutes)
-3. Download `best_model.pt`, `config.json`, `tokenizer.json`
+3. Download `best_model.pt`, `config.json`, and the evaluation JSON files
 
 ### 4. Run the App
 

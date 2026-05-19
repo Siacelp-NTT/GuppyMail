@@ -632,6 +632,7 @@ REPORT_CHART_FILES = [
     CHARTS_DIR / "report_length_distributions.png",
     CHARTS_DIR / "report_cleaning_retention.png",
     CHARTS_DIR / "report_summary_compression.png",
+    CHARTS_DIR / "report_summary_label_quality.png",
     CHARTS_DIR / "report_quality_flags.png",
     CHARTS_DIR / "report_split_balance.png",
     CHARTS_DIR / "report_duplicate_diagnostics.png",
@@ -1399,16 +1400,18 @@ def tab_charts():
             r3 = gr.Image(label="Cleaning Retention", value=report_paths[2])
             r4 = gr.Image(label="Summary Compression", value=report_paths[3])
         with gr.Row():
-            r5 = gr.Image(label="Quality Flags", value=report_paths[4])
-            r6 = gr.Image(label="Split Balance", value=report_paths[5])
+            r5 = gr.Image(label="Summary Label Quality", value=report_paths[4])
+            r6 = gr.Image(label="Quality Flags", value=report_paths[5])
         with gr.Row():
-            r7 = gr.Image(label="Duplicate Diagnostics", value=report_paths[6])
-            r8 = gr.Image(label="Top Summary Terms", value=report_paths[7])
-        r9 = gr.Image(label="Tokenizer Lengths", value=report_paths[8])
+            r7 = gr.Image(label="Split Balance", value=report_paths[6])
+            r8 = gr.Image(label="Duplicate Diagnostics", value=report_paths[7])
+        with gr.Row():
+            r9 = gr.Image(label="Top Summary Terms", value=report_paths[8])
+            r10 = gr.Image(label="Tokenizer Lengths", value=report_paths[9])
 
         analytics_btn.click(
             generate_full_analytics,
-            outputs=[analytics_out, r1, r2, r3, r4, r5, r6, r7, r8, r9],
+            outputs=[analytics_out, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10],
         )
 
         auto_timer = gr.Timer(30)

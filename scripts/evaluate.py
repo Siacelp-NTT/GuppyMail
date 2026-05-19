@@ -195,8 +195,8 @@ def compute_rouge(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate guppyemail on the test split.")
     parser.add_argument("--checkpoint", default=str(BASE_DIR / "checkpoints" / "best_model.pt"))
-    parser.add_argument("--tokenizer", default=str(BASE_DIR / "data" / "training" / "tokenizer.json"))
-    parser.add_argument("--data", default=str(BASE_DIR / "data" / "training" / "test.jsonl"))
+    parser.add_argument("--tokenizer", default=str(BASE_DIR / "data" / "training_quality" / "tokenizer.json"))
+    parser.add_argument("--data", default=str(BASE_DIR / "data" / "training_quality" / "test.jsonl"))
     parser.add_argument("--output", default=str(BASE_DIR / "evaluation" / "eval_results.json"))
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=16)

@@ -35,11 +35,16 @@ CLEAN_PATH = DATA_DIR / "processed" / "cleaned_emails.jsonl"
 CLEAN_PROFILE_PATH = DATA_DIR / "processed" / "cleaned_emails.profile.json"
 SUM_PATH = DATA_DIR / "summaries" / "en_summaries.jsonl"
 CLEAN_SUM_PATH = DATA_DIR / "summaries" / "en_summaries.clean.jsonl"
-TRAIN_PATH = DATA_DIR / "training" / "train.jsonl"
-VAL_PATH = DATA_DIR / "training" / "val.jsonl"
-TEST_PATH = DATA_DIR / "training" / "test.jsonl"
-TOKENIZER_PATH = DATA_DIR / "training" / "tokenizer.json"
-TOKENIZER_METRICS_PATH = DATA_DIR / "training" / "tokenizer_metrics.json"
+QUALITY_DIR = DATA_DIR / "training_quality"
+QUALITY_FILTERED_PATH = QUALITY_DIR / "filtered_source.jsonl"
+QUALITY_NO_SUMMARY_PATH = QUALITY_DIR / "no_summary_source.jsonl"
+QUALITY_METRICS_PATH = QUALITY_DIR / "quality_metrics.json"
+TRAIN_DIR = QUALITY_DIR if (QUALITY_DIR / "train.jsonl").exists() else DATA_DIR / "training"
+TRAIN_PATH = TRAIN_DIR / "train.jsonl"
+VAL_PATH = TRAIN_DIR / "val.jsonl"
+TEST_PATH = TRAIN_DIR / "test.jsonl"
+TOKENIZER_PATH = TRAIN_DIR / "tokenizer.json"
+TOKENIZER_METRICS_PATH = TRAIN_DIR / "tokenizer_metrics.json"
 CHARTS_DIR = DATA_DIR / "charts"
 REPORT_DIR = BASE_DIR / "report"
 
@@ -174,7 +179,7 @@ def chart_pipeline(counts):
         counts["raw"],
         counts["cleaned_unique"],
         counts["summaries"],
-        counts["clean_summaries"],
+        counts["quality_filtered"],
         counts["train"] + counts["val"] + counts["test"],
     ]
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -264,6 +269,43 @@ def chart_quality(summaries):
     ax.tick_params(axis="x", rotation=20)
     style_axes(ax)
     return save_fig(fig, "report_quality_flags.png")
+
+
+def chart_summary_label_quality(summaries, quality_metrics):
+    type_counts = Counter(str(r.get("summary_type") or "missing").strip().lower() for r in summaries)
+    quality_counts = Counter(str(r.get("summary_quality") or r.get("quality") or "missing").strip().lower() for r in summaries)
+    training_counts = {
+        "accepted": int(quality_metrics.get("accepted_rows") or 0),
+        "rejected": int(quality_metrics.get("rejected_rows") or 0),
+        "fallback": int(quality_metrics.get("no_summary_rows") or 0),
+    }
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    panels = [
+        (axes[0], type_counts, "Summary Type Labels", "#2563eb"),
+        (axes[1], quality_counts, "Summary Quality Labels", "#16a34a"),
+        (axes[2], training_counts, "Quality Builder Outcome", "#ca8a04"),
+    ]
+
+    for ax, counts, title, color in panels:
+        labels = list(counts.keys()) or ["none"]
+        values = [counts[label] for label in labels] or [0]
+        bars = ax.bar(labels, values, color=color, alpha=0.9)
+        for bar, value in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value,
+                f"{value:,}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+        ax.set_title(title)
+        ax.set_ylabel("Rows")
+        ax.tick_params(axis="x", rotation=25)
+        style_axes(ax)
+
+    return save_fig(fig, "report_summary_label_quality.png")
 
 
 def chart_splits(train, val, test):
@@ -388,6 +430,10 @@ def write_statistics_csv(metrics):
 
 def write_markdown(metrics, charts):
     path = REPORT_DIR / "data_profile.md"
+    label_quality = metrics.get("summary_label_quality", {})
+    type_counts = label_quality.get("summary_type_counts", {})
+    quality_counts = label_quality.get("summary_quality_counts", {})
+    builder = label_quality.get("quality_builder", {})
     lines = [
         "# Data Profile",
         "",
@@ -399,7 +445,9 @@ def write_markdown(metrics, charts):
         f"| Cleaned emails | {metrics['counts']['cleaned']:,} |",
         f"| Canonical unique cleaned emails | {metrics['counts']['cleaned_unique']:,} |",
         f"| Generated summaries | {metrics['counts']['summaries']:,} |",
-        f"| Quality filtered summary pairs | {metrics['counts']['clean_summaries']:,} |",
+        f"| Clean summary rows | {metrics['counts']['clean_summaries']:,} |",
+        f"| Quality filtered summary pairs | {metrics['counts']['quality_filtered']:,} |",
+        f"| No-summary fallback rows | {metrics['counts']['no_summary']:,} |",
         f"| Train / validation / test | {metrics['counts']['train']:,} / {metrics['counts']['val']:,} / {metrics['counts']['test']:,} |",
         "",
         "## Key Statistics",
@@ -421,6 +469,13 @@ def write_markdown(metrics, charts):
         f"- Tokenizer vocabulary size: {metrics['tokenization']['vocab_size']:,}.",
         f"- Tokenized max sequence length: {metrics['tokenization']['max_seq_len']:,}.",
         f"- Tokenized rows truncated: {metrics['tokenization']['truncated_rows']:,} ({metrics['tokenization']['truncated_pct']}%).",
+        f"- Training artifact source: `{metrics['training_artifact_dir']}`.",
+        "",
+        "## Summary Label Quality",
+        "",
+        f"- Summary labels: good/trainable `{type_counts.get('summary', 0):,}`, no-summary `{type_counts.get('no_summary_needed', 0):,}`, noise `{type_counts.get('noise', 0):,}`, malformed `{type_counts.get('malformed', 0):,}`.",
+        f"- Quality labels: good `{quality_counts.get('good', 0):,}`, weak `{quality_counts.get('weak', 0):,}`, noise `{quality_counts.get('noise', 0):,}`.",
+        f"- Quality builder outcome: accepted `{builder.get('accepted_rows', 0):,}`, rejected `{builder.get('rejected_rows', 0):,}`, fallback/no-summary `{builder.get('no_summary_rows', 0):,}`.",
         "",
         "## Generated Figures",
         "",
@@ -432,17 +487,17 @@ def write_markdown(metrics, charts):
     return str(path)
 
 
-def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, clean_profile):
-    summary_lengths = [len(summary_of(r)) for r in clean_summaries]
-    summary_words = [len(summary_of(r).split()) for r in clean_summaries]
+def build_metrics(raw, cleaned, summaries, clean_summaries, quality_filtered, no_summary, train, val, test, clean_profile, quality_metrics):
+    summary_lengths = [len(summary_of(r)) for r in quality_filtered]
+    summary_words = [len(summary_of(r).split()) for r in quality_filtered]
     cleaned_lengths = [len(text_of(r)) for r in cleaned]
-    compression = [len(summary_of(r)) / max(len(text_of(r)), 1) for r in clean_summaries]
+    compression = [len(summary_of(r)) / max(len(text_of(r)), 1) for r in quality_filtered]
     cleaned_exact_hashes = [hash_text(text_of(r)) for r in cleaned]
     cleaned_prefix_hashes = [hash_text(norm_text(text_of(r))[:200]) for r in cleaned]
     cleaned_unique_count = len(set(cleaned_exact_hashes))
     cleaned_exact_duplicates = len(cleaned_exact_hashes) - cleaned_unique_count
     flagged = sum(1 for r in summaries if summary_flags(summary_of(r)))
-    coverage = (len(clean_summaries) / cleaned_unique_count * 100) if cleaned_unique_count else 0
+    coverage = (len(quality_filtered) / cleaned_unique_count * 100) if cleaned_unique_count else 0
     duplicates_removed = int(clean_profile.get("duplicate_rows_removed") or 0)
     tokenizer_metrics = {}
     if TOKENIZER_METRICS_PATH.exists():
@@ -458,6 +513,8 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, cl
     }
     truncated_rows = sum(1 for r in train + val + test if r.get("truncated"))
     total_tokenized = len(train) + len(val) + len(test)
+    summary_type_counts = Counter(str(r.get("summary_type") or "missing").strip().lower() for r in summaries)
+    summary_quality_counts = Counter(str(r.get("summary_quality") or r.get("quality") or "missing").strip().lower() for r in summaries)
     return {
         "counts": {
             "raw": len(raw),
@@ -466,10 +523,13 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, cl
             "cleaned_exact_duplicates": cleaned_exact_duplicates,
             "summaries": len(summaries),
             "clean_summaries": len(clean_summaries),
+            "quality_filtered": len(quality_filtered),
+            "no_summary": len(no_summary),
             "train": len(train),
             "val": len(val),
             "test": len(test),
         },
+        "training_artifact_dir": str(TRAIN_DIR.relative_to(BASE_DIR)),
         "cleaned_length": stats(cleaned_lengths),
         "summary_length": stats(summary_lengths),
         "summary_words": stats(summary_words),
@@ -479,6 +539,16 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, cl
         "cleaned_exact_duplicates": cleaned_exact_duplicates,
         "flagged_summaries": flagged,
         "cleaned_prefix_duplicates": len(cleaned_prefix_hashes) - len(set(cleaned_prefix_hashes)),
+        "summary_label_quality": {
+            "summary_type_counts": dict(summary_type_counts),
+            "summary_quality_counts": dict(summary_quality_counts),
+            "quality_builder": {
+                "accepted_rows": int(quality_metrics.get("accepted_rows") or len(quality_filtered)),
+                "rejected_rows": int(quality_metrics.get("rejected_rows") or 0),
+                "no_summary_rows": int(quality_metrics.get("no_summary_rows") or len(no_summary)),
+                "generic_summary_rows": int(quality_metrics.get("generic_summary_rows") or 0),
+            },
+        },
         "clean_profile": {
             "raw_rows": int(clean_profile.get("raw_rows") or 0),
             "skipped_rows": int(clean_profile.get("skipped_rows") or 0),
@@ -505,20 +575,24 @@ def generate_report():
     clean_profile = load_json(CLEAN_PROFILE_PATH)
     summaries = load_jsonl(SUM_PATH)
     clean_summaries = load_jsonl(CLEAN_SUM_PATH)
+    quality_filtered = load_jsonl(QUALITY_FILTERED_PATH) or clean_summaries
+    no_summary = load_jsonl(QUALITY_NO_SUMMARY_PATH)
+    quality_metrics = load_json(QUALITY_METRICS_PATH)
     train = load_jsonl(TRAIN_PATH)
     val = load_jsonl(VAL_PATH)
     test = load_jsonl(TEST_PATH)
 
-    metrics = build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, clean_profile)
+    metrics = build_metrics(raw, cleaned, summaries, clean_summaries, quality_filtered, no_summary, train, val, test, clean_profile, quality_metrics)
     charts = [
         chart_pipeline(metrics["counts"]),
-        chart_lengths(raw, cleaned, clean_summaries),
+        chart_lengths(raw, cleaned, quality_filtered),
         chart_cleaning_retention(cleaned),
-        chart_summary_relationship(clean_summaries),
+        chart_summary_relationship(quality_filtered),
+        chart_summary_label_quality(summaries, quality_metrics),
         chart_quality(summaries),
         chart_splits(train, val, test),
         chart_duplicates(raw, cleaned, summaries),
-        chart_top_terms(clean_summaries),
+        chart_top_terms(quality_filtered),
         chart_tokenizer_lengths(train, val, test, metrics["tokenization"]),
     ]
 
