@@ -1,4 +1,4 @@
-# 🐟 GuppyLM - Email Summarizer - Prototype
+# guppyemail - Email Summarizer Prototype
 
 A tiny (~9M parameter) language model trained **from scratch** to summarize emails. No PhD required. No massive GPU. One Colab notebook, 5 minutes, and you have your own LLM.
 
@@ -7,13 +7,13 @@ It won't write like a corporate assistant. But it'll tell you what the email say
 ```
 Email: "Dear team, the Q3 budget review meeting has been moved from Feb 10 to Feb 5..."
 
-GuppyLM: "hey, meeting moved to feb 5. bring your reports. be there by friday."
+guppyemail: "hey, meeting moved to feb 5. bring your reports. be there by friday."
 ```
 
 ## Features
 
 - 📧 **Gmail Integration** - Connect your Gmail to fetch real emails
-- 🐟 **Custom Tiny LLM** - 9M params, trained from scratch, ~10MB model file
+- **guppyemail Tiny LLM** - 9M params, trained from scratch, ~34MB checkpoint
 - ⚡ **5-Minute Training** - Runs on free Colab GPU (T4)
 - 📊 **Priority Classification** - Urgent / Important / Normal / Low
 - ✅ **Action Item Extraction** - Finds tasks and deadlines
@@ -45,7 +45,7 @@ python scripts/generate_summaries.py
 
 ### 3. Train the Model
 
-Open `notebooks/train_guppylm.ipynb` in **Google Colab** (free GPU):
+Open `notebooks/train_email_guppylm.ipynb` in **Google Colab** (free GPU):
 1. Upload training data from `data/training/`
 2. Run all cells (~5 minutes)
 3. Download `best_model.pt`, `config.json`, `tokenizer.json`
@@ -67,12 +67,12 @@ email-summarizer/
 ├── PROJECT-PLAN.md               # Full project plan
 ├── requirements.txt
 ├── config.py                     # Model + training config
-├── model.py                      # GuppyLM vanilla transformer
+├── model.py                      # guppyemail vanilla transformer
 ├── dataset.py                    # Data loading and batching
 ├── train.py                      # Training loop
 ├── inference.py                  # Chat/inference engine
 ├── notebooks/
-│   └── train_guppylm.ipynb       # Colab training notebook
+│   └── train_email_guppylm.ipynb # Colab training notebook
 ├── src/
 │   ├── gmail_client.py           # Gmail API wrapper
 │   ├── preprocess.py             # Email cleaning pipeline
@@ -105,9 +105,9 @@ email-summarizer/
 
 No GQA, no RoPE, no SwiGLU. As simple as it gets.
 
-## GuppyLM?
+## guppyemail
 
-With GuppyLM:
+guppyemail is derived from the GuppyLM-style small-transformer architecture, but it is trained on a different email summarization dataset with a different scope.
 
 - **A tiny LLM** - from tokenization to transformer to training loop
 - **Training takes 5 minutes** - not 2-4 hours

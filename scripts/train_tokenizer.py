@@ -1,5 +1,5 @@
 """
-Prepare GuppyLM tokenizer and ChatML training splits for email summarization.
+Prepare the guppyemail tokenizer and ChatML training splits for email summarization.
 
 Outputs:
     data/training/tokenizer.json
@@ -200,7 +200,7 @@ def prepare_training_data(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train GuppyLM BPE tokenizer and ChatML splits.")
+    parser = argparse.ArgumentParser(description="Train guppyemail BPE tokenizer and ChatML splits.")
     parser.add_argument("--input", default=str(SUM_DIR / "en_summaries.clean.jsonl"))
     parser.add_argument("--output-dir", default=str(TRAIN_DIR))
     parser.add_argument("--vocab-size", type=int, default=4096)
