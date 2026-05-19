@@ -12,12 +12,15 @@ Usage:
 Cost: ~$2.50 for 25K emails (with concurrency, ~40-60 min)
 """
 
-import os
 import json
+import hashlib
+import os
+import re
 import time
 import argparse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, wait as fut_wait, FIRST_COMPLETED
+from pathlib import Path
 from tqdm import tqdm
 
 import requests
@@ -57,30 +60,208 @@ NOT this style:
 "The quarterly review meeting has been rescheduled from February 10th to February 5th at 14:00. All department heads are requested to submit their financial reports..."
 """
 
+STRUCTURED_SYSTEM_PROMPT = """You create training labels for guppyemail, a tiny email summarization model.
 
-def summarize_one(api_key, base_url, email_text, subject, model, max_tokens):
+Return ONLY valid JSON with this schema:
+{"summary_type":"summary|no_summary_needed|noise","quality":"good|weak|noise","summary":"short casual lowercase summary","reason":"brief reason"}
+
+Rules:
+- If the email has concrete information, summarize it in 1-2 short lowercase sentences.
+- Mention dates, deadlines, meetings, requests, decisions, and action items when present.
+- Do not use vague fallback text like "email received, nothing specific to report" as a summary.
+- If the email is too short, empty, only an attachment notice, only quoted history, or has no useful content, set summary_type to "no_summary_needed", quality to "weak", and summary to "".
+- If the email is mostly markup, image placeholders, unsubscribe text, or corrupted content, set summary_type to "noise", quality to "noise", and summary to "".
+- Keep useful summaries under 50 words and reason under 12 words.
+- Return minified one-line JSON only. No markdown, code fences, comments, or extra text.
+"""
+
+GENERIC_SUMMARY_RE = re.compile(
+    r"^\s*(email received[,;:]?\s*)?nothing specific to report\.?\s*$",
+    re.IGNORECASE,
+)
+
+DASHSCOPE_DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/api/v1"
+DASHSCOPE_MULTIMODAL_MODELS = {
+    "qwen3.5-plus",
+    "qwen3.5-plus-2026-02-15",
+}
+
+
+def normalize_hash(text):
+    normalized = re.sub(r"\s+", " ", (text or "")).strip().lower()
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+
+def resolve_provider(provider, model):
+    provider = (provider or "auto").strip().lower()
+    if provider != "auto":
+        return provider
+    return "dashscope" if (model or "").startswith("qwen") else "openai"
+
+
+def dashscope_endpoint(base_url, model):
+    base = (base_url or DASHSCOPE_DEFAULT_BASE_URL).rstrip("/")
+    if dashscope_uses_multimodal(model):
+        return base + "/services/aigc/multimodal-generation/generation"
+    return base + "/services/aigc/text-generation/generation"
+
+
+def dashscope_uses_multimodal(model):
+    model_name = (model or "").lower()
+    return model_name in DASHSCOPE_MULTIMODAL_MODELS or "-vl" in model_name
+
+
+def dashscope_content(model, text):
+    if dashscope_uses_multimodal(model):
+        return [{"text": text}]
+    return text
+
+
+def extract_dashscope_content(data):
+    output = data.get("output") or {}
+    choices = output.get("choices") or []
+    if choices:
+        message = choices[0].get("message") or {}
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text", "")))
+                else:
+                    parts.append(str(item))
+            return "".join(parts)
+    return str(output.get("text", "") or "")
+
+
+def parse_structured_summary(content):
+    raw = (content or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+    if not raw.startswith("{") and "{" in raw and "}" in raw:
+        raw = raw[raw.find("{") : raw.rfind("}") + 1]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return malformed_summary(content, f"malformed_json: {short_error(exc)}")
+
+    if not isinstance(data, dict):
+        return malformed_summary(content, "structured output was not a json object")
+
+    summary = " ".join(str(data.get("summary", "")).strip().split())
+    summary_type = str(data.get("summary_type", "")).strip().lower()
+    quality = str(data.get("quality", "")).strip().lower()
+    reason = str(data.get("reason", "")).strip()
+
+    if summary_type not in {"summary", "no_summary_needed", "noise"}:
+        return malformed_summary(content, f"invalid summary_type: {summary_type or 'missing'}")
+    if quality not in {"good", "weak", "noise"}:
+        return malformed_summary(content, f"invalid quality: {quality or 'missing'}")
+
+    if GENERIC_SUMMARY_RE.match(summary):
+        summary = ""
+        summary_type = "no_summary_needed"
+        quality = "weak"
+        reason = reason or "generic fallback removed"
+    elif summary_type == "summary" and not summary:
+        return malformed_summary(content, "summary label had empty summary")
+    elif summary_type in {"no_summary_needed", "noise"} and summary:
+        return malformed_summary(content, f"{summary_type} label had non-empty summary")
+
+    return {
+        "summary": summary,
+        "summary_type": summary_type,
+        "summary_quality": quality,
+        "summary_reason": reason,
+        "summary_raw_response": content,
+    }
+
+
+def malformed_summary(content, reason):
+    return {
+        "summary": "",
+        "summary_type": "malformed",
+        "summary_quality": "noise",
+        "summary_reason": reason,
+        "summary_raw_response": content,
+    }
+
+
+def summarize_one(api_key, base_url, email_text, subject, model, max_tokens, structured=True, temperature=0.0, provider="openai"):
     if len(email_text) > 3000:
         email_text = email_text[:3000] + "... [truncated]"
     full_text = f"Subject: {subject}\n\n{email_text}" if subject else email_text
+    user_prompt = f"Analyze this email for guppyemail training:\n\n{full_text}" if structured else f"Summarize this email in your casual style:\n\n{full_text}"
+    system_prompt = STRUCTURED_SYSTEM_PROMPT if structured else SYSTEM_PROMPT
+
+    if provider == "dashscope":
+        url = dashscope_endpoint(base_url, model)
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Connection": "close"}
+        body = {
+            "model": model,
+            "input": {
+                "messages": [
+                    {"role": "system", "content": dashscope_content(model, system_prompt)},
+                    {"role": "user", "content": dashscope_content(model, user_prompt)},
+                ]
+            },
+            "parameters": {
+                "temperature": temperature,
+                "result_format": "message",
+            },
+        }
+        if max_tokens and max_tokens > 0:
+            body["parameters"]["max_tokens"] = max_tokens
+        if structured:
+            body["parameters"]["response_format"] = {"type": "json_object"}
+        resp = requests.post(url, json=body, headers=headers, timeout=(30, 120))
+        resp.raise_for_status()
+        content = extract_dashscope_content(resp.json()).strip()
+        if structured:
+            return parse_structured_summary(content)
+        return {
+            "summary": content or "",
+            "summary_type": "summary" if content and not GENERIC_SUMMARY_RE.match(content) else "no_summary_needed",
+            "summary_quality": "good" if content and not GENERIC_SUMMARY_RE.match(content) else "weak",
+            "summary_reason": "dashscope plain summary",
+            "summary_raw_response": content,
+        }
+
     url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Connection": "close"}
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Summarize this email in your casual style:\n\n{full_text}"}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.5,
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if structured:
+        body["response_format"] = {"type": "json_object"}
     resp = requests.post(url, json=body, headers=headers, timeout=(30, 120))
+    if structured and resp.status_code in {400, 422} and "response_format" in body:
+        body.pop("response_format", None)
+        resp = requests.post(url, json=body, headers=headers, timeout=(30, 120))
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"].strip()
-    return content or "email received, nothing specific to report"
+    if structured:
+        return parse_structured_summary(content)
+    return {
+        "summary": content or "",
+        "summary_type": "summary" if content and not GENERIC_SUMMARY_RE.match(content) else "no_summary_needed",
+        "summary_quality": "good" if content and not GENERIC_SUMMARY_RE.match(content) else "weak",
+        "summary_reason": "legacy plain summary",
+        "summary_raw_response": content,
+    }
 
 
-def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, checkpoint_every=50, save_callback=None, echo_fn=print, cooldown_every=100, cooldown_secs=15, max_per_batch=0):
+def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, checkpoint_every=50, save_callback=None, echo_fn=print, cooldown_every=100, cooldown_secs=15, max_per_batch=0, structured=True, temperature=0.0, provider="openai"):
     results = [None] * len(emails)
     errors = []
     completed = 0
@@ -91,8 +272,12 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
     warned_stall = False
     next_cooldown = cooldown_every
 
-    key = api_key or os.environ.get("OPENAI_API_KEY")
-    url = base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    if provider == "dashscope":
+        key = api_key or os.environ.get("DASHSCOPE_API_KEY")
+        url = base_url or os.environ.get("DASHSCOPE_BASE_URL", DASHSCOPE_DEFAULT_BASE_URL)
+    else:
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        url = base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     def job(idx):
         email = emails[idx]
@@ -100,8 +285,8 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
         subject = email.get("subject", "")
         for attempt in range(3):
             try:
-                summary = summarize_one(key, url, cleaned, subject, model, max_tokens)
-                return idx, summary, email
+                summary_data = summarize_one(key, url, cleaned, subject, model, max_tokens, structured=structured, temperature=temperature, provider=provider)
+                return idx, summary_data, email
             except requests.exceptions.Timeout as e:
                 echo_fn(f"[{now_ts()}] timeout idx={idx} attempt={attempt+1}/3 subject={subject[:60]!r} error={short_error(e)}")
                 if attempt < 2:
@@ -131,19 +316,29 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
                 for future in done:
                     idx = futures[future]
                     try:
-                        idx, summary, email = future.result()
+                        idx, summary_data, email = future.result()
                     except Exception as e:
                         errors.append({"index": idx, "error": short_error(e)})
                         email = emails[idx]
                         email["summary"] = "error: could not summarize"
+                        email["summary_type"] = "error"
+                        email["summary_quality"] = "noise"
+                        email["summary_reason"] = short_error(e)
                         email["summary_model"] = model
                     else:
-                        if summary:
-                            email["summary"] = summary
-                            email["summary_model"] = model
-                        else:
-                            email["summary"] = "empty: retries exhausted"
-                            email["summary_model"] = model
+                        summary_data = summary_data or {}
+                        email["summary"] = summary_data.get("summary", "")
+                        email["summary_type"] = summary_data.get("summary_type", "summary" if email["summary"] else "no_summary_needed")
+                        email["summary_quality"] = summary_data.get("summary_quality", "good" if email["summary"] else "weak")
+                        email["summary_reason"] = summary_data.get("summary_reason", "")
+                        if "summary_raw_response" in summary_data:
+                            email["summary_raw_response"] = summary_data["summary_raw_response"]
+                        email["summary_model"] = model
+                        if email["summary_type"] == "malformed":
+                            errors.append({"index": idx, "error": email.get("summary_reason", "malformed structured output")})
+                        if not email["summary"] and email["summary_type"] == "summary":
+                            email["summary_type"] = "no_summary_needed"
+                            email["summary_quality"] = "weak"
                             errors.append({"index": idx, "error": "empty after 3 retries"})
                     results[idx] = email
                     completed += 1
@@ -208,6 +403,8 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
 
 def load_emails(path):
     emails = []
+    if not os.path.exists(path):
+        return emails
     with open(path) as f:
         for line in f:
             try:
@@ -229,6 +426,49 @@ def save_results(results, path):
         except OSError:
             pass
     os.replace(tmp, path)
+    save_malformed_results(results, path)
+
+
+def save_malformed_results(results, path):
+    malformed = [r for r in results if r.get("summary_type") == "malformed"]
+    malformed_path = str(Path(path).with_suffix(".malformed.jsonl"))
+    if not malformed:
+        if os.path.exists(malformed_path):
+            os.remove(malformed_path)
+        return
+
+    tmp = malformed_path + ".tmp"
+    with open(tmp, "w") as f:
+        for r in malformed:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, malformed_path)
+
+
+def archive_summary_outputs(output_path):
+    """Move existing summary outputs aside so a clean redo cannot append to them."""
+    output = Path(output_path)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_dir = output.parent / "archive"
+    archived = []
+
+    candidates = [output]
+    if output.name == "en_summaries.jsonl":
+        candidates.append(output.with_name("en_summaries.clean.jsonl"))
+        candidates.append(output.with_name("en_summaries.malformed.jsonl"))
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived_path = archive_dir / f"{path.stem}.{timestamp}{path.suffix}"
+        counter = 1
+        while archived_path.exists():
+            archived_path = archive_dir / f"{path.stem}.{timestamp}.{counter}{path.suffix}"
+            counter += 1
+        os.replace(path, archived_path)
+        archived.append((path, archived_path))
+
+    return archived
 
 
 def main():
@@ -239,13 +479,17 @@ def main():
     parser.add_argument("--input", default="data/processed/cleaned_emails.jsonl")
     parser.add_argument("--output", default="data/summaries/en_summaries.jsonl")
     parser.add_argument("--model", default=os.environ.get("LLM_MODEL", "deepseek-v4-flash"))
-    parser.add_argument("--max-tokens", type=int, default=120)
+    parser.add_argument("--provider", choices=["auto", "openai", "dashscope"], default=os.environ.get("LLM_PROVIDER", "auto"))
+    parser.add_argument("--max-tokens", type=int, default=300)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--legacy-summary", action="store_true", help="Disable structured JSON labels and request plain summaries only.")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--log", default="", help="Write output to this log file")
     parser.add_argument("--cooldown-every", type=int, default=100, help="Pause after this many requests (default: 100)")
     parser.add_argument("--cooldown-secs", type=int, default=15, help="Seconds to pause (default: 15)")
     parser.add_argument("--max-per-batch", type=int, default=1500, help="Max requests per session, then exit for clean restart (default: 1500)")
+    parser.add_argument("--reset-output", action="store_true", help="Archive existing output files before starting a clean redo.")
     args = parser.parse_args()
 
     input_path = args.input
@@ -254,13 +498,21 @@ def main():
 
     log = open(args.log, "a", buffering=1) if args.log else None
 
-    if not args.api_key and not os.environ.get("OPENAI_API_KEY"):
+    provider = resolve_provider(args.provider, args.model)
+    has_key = bool(args.api_key)
+    if provider == "dashscope":
+        has_key = has_key or bool(os.environ.get("DASHSCOPE_API_KEY"))
+    else:
+        has_key = has_key or bool(os.environ.get("OPENAI_API_KEY"))
+
+    if not has_key:
         def echo(msg):
             print(msg)
             if log:
                 log.write(msg + "\n")
-        echo("ERROR: OPENAI_API_KEY not set!")
-        echo("  export OPENAI_API_KEY='your-key'")
+        key_name = "DASHSCOPE_API_KEY" if provider == "dashscope" else "OPENAI_API_KEY"
+        echo(f"ERROR: {key_name} not set!")
+        echo(f"  export {key_name}='your-key'")
         echo("  or use --api-key <key>")
         return
 
@@ -273,30 +525,39 @@ def main():
     run_started = time.time()
     emails = load_emails(input_path)
 
+    if args.reset_output:
+        archived = archive_summary_outputs(output_path)
+    else:
+        archived = []
+
     existing = load_emails(output_path)
     start_idx = len(existing)
     echo("=" * 72)
     echo(f"[{now_ts()}] summary generation started")
     echo(f"input={input_path}")
     echo(f"output={output_path}")
-    echo(f"model={args.model} workers={args.workers} max_tokens={args.max_tokens}")
+    structured = not args.legacy_summary
+    echo(f"provider={provider} model={args.model} workers={args.workers} max_tokens={args.max_tokens} temperature={args.temperature} structured={structured}")
     echo(f"cooldown_every={args.cooldown_every} cooldown_secs={args.cooldown_secs} max_per_batch={args.max_per_batch}")
+    if archived:
+        for old_path, archived_path in archived:
+            echo(f"archived={old_path} -> {archived_path}")
     echo(f"input_rows={len(emails):,} existing_output_rows={len(existing):,}")
     if start_idx > 0:
         echo(f"[{now_ts()}] loaded existing summaries; scanning input for missing hashes")
 
     # dedup: skip cleaned_bodies already summarized (shifted after re-download)
-    import hashlib
     seen_hashes = set()
     for r in existing:
         body = r.get("cleaned_body", "")
-        seen_hashes.add(hashlib.md5(body[:200].encode()).hexdigest())
+        if body:
+            seen_hashes.add(normalize_hash(body))
 
     deduped = []
     skipped = 0
     for e in emails:
         body = e.get("cleaned_body", "")
-        h = hashlib.md5(body[:200].encode()).hexdigest()
+        h = normalize_hash(body)
         if h in seen_hashes:
             skipped += 1
         else:
@@ -330,7 +591,8 @@ def main():
             remaining, args.model, args.api_key, args.base_url, args.max_tokens, args.workers,
             checkpoint_every=50, save_callback=checkpoint, echo_fn=echo,
             cooldown_every=args.cooldown_every, cooldown_secs=args.cooldown_secs,
-            max_per_batch=args.max_per_batch
+            max_per_batch=args.max_per_batch, structured=structured, temperature=args.temperature,
+            provider=provider,
         )
         total_errors.extend(errors)
         save_results(existing + results, output_path)
@@ -359,8 +621,10 @@ def main():
         for r in all_results[-5:]:
             body = r.get("cleaned_body", "")[:150]
             summary = r.get("summary", "")
+            summary_type = r.get("summary_type", "")
+            quality = r.get("summary_quality", "")
             echo(f"\nEmail: {body}...")
-            echo(f"Summary: {summary}")
+            echo(f"Summary [{summary_type}/{quality}]: {summary}")
 
     if log:
         log.close()

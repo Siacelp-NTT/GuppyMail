@@ -32,6 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 RAW_PATH = DATA_DIR / "raw" / "enron_sample.jsonl"
 CLEAN_PATH = DATA_DIR / "processed" / "cleaned_emails.jsonl"
+CLEAN_PROFILE_PATH = DATA_DIR / "processed" / "cleaned_emails.profile.json"
 SUM_PATH = DATA_DIR / "summaries" / "en_summaries.jsonl"
 CLEAN_SUM_PATH = DATA_DIR / "summaries" / "en_summaries.clean.jsonl"
 TRAIN_PATH = DATA_DIR / "training" / "train.jsonl"
@@ -62,6 +63,15 @@ def load_jsonl(path):
             except json.JSONDecodeError:
                 continue
     return rows
+
+
+def load_json(path):
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def text_of(record):
@@ -125,6 +135,8 @@ def summary_flags(summary, max_chars=300):
         flags.append("too_long")
     if lower.startswith(("error:", "empty:")):
         flags.append("generation_error")
+    if lower.startswith(("{", "[")) or "\"summary_type\"" in lower or '"quality"' in lower:
+        flags.append("json_fragment")
     leakage_terms = [
         "under 50 words", "final:", "let's craft", "the summary should",
         "to be thorough", "need to keep it", "check:", "potential:",
@@ -157,10 +169,10 @@ def style_axes(ax):
 
 
 def chart_pipeline(counts):
-    labels = ["Raw", "Cleaned", "Summarized", "Clean summaries", "Train+Val+Test"]
+    labels = ["Raw", "Cleaned unique", "Summarized", "Quality filtered", "Train+Val+Test"]
     values = [
         counts["raw"],
-        counts["cleaned"],
+        counts["cleaned_unique"],
         counts["summaries"],
         counts["clean_summaries"],
         counts["train"] + counts["val"] + counts["test"],
@@ -385,8 +397,9 @@ def write_markdown(metrics, charts):
         "|---|---:|",
         f"| Raw sampled emails | {metrics['counts']['raw']:,} |",
         f"| Cleaned emails | {metrics['counts']['cleaned']:,} |",
+        f"| Canonical unique cleaned emails | {metrics['counts']['cleaned_unique']:,} |",
         f"| Generated summaries | {metrics['counts']['summaries']:,} |",
-        f"| Clean summary pairs | {metrics['counts']['clean_summaries']:,} |",
+        f"| Quality filtered summary pairs | {metrics['counts']['clean_summaries']:,} |",
         f"| Train / validation / test | {metrics['counts']['train']:,} / {metrics['counts']['val']:,} / {metrics['counts']['test']:,} |",
         "",
         "## Key Statistics",
@@ -399,9 +412,11 @@ def write_markdown(metrics, charts):
         "",
         "## Quality Notes",
         "",
-        f"- Clean summary coverage: {metrics['coverage_pct']}% of cleaned emails.",
+        f"- Clean summary coverage: {metrics['coverage_pct']}% of canonical unique cleaned emails.",
+        f"- Duplicates removed during cleaning: {metrics['duplicates_removed_during_cleaning']:,}.",
+        f"- Exact duplicate rows still present in cleaned file: {metrics['cleaned_exact_duplicates']:,}.",
         f"- Flagged generated summaries: {metrics['flagged_summaries']:,}.",
-        f"- Cleaned near-duplicate rows by first 200 characters: {metrics['cleaned_prefix_duplicates']:,}.",
+        f"- Cleaned first-200 near-duplicate diagnostic rows: {metrics['cleaned_prefix_duplicates']:,}.",
         f"- Median compression ratio: {metrics['compression_ratio']['median']}.",
         f"- Tokenizer vocabulary size: {metrics['tokenization']['vocab_size']:,}.",
         f"- Tokenized max sequence length: {metrics['tokenization']['max_seq_len']:,}.",
@@ -417,14 +432,18 @@ def write_markdown(metrics, charts):
     return str(path)
 
 
-def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
+def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, clean_profile):
     summary_lengths = [len(summary_of(r)) for r in clean_summaries]
     summary_words = [len(summary_of(r).split()) for r in clean_summaries]
     cleaned_lengths = [len(text_of(r)) for r in cleaned]
     compression = [len(summary_of(r)) / max(len(text_of(r)), 1) for r in clean_summaries]
+    cleaned_exact_hashes = [hash_text(text_of(r)) for r in cleaned]
     cleaned_prefix_hashes = [hash_text(norm_text(text_of(r))[:200]) for r in cleaned]
+    cleaned_unique_count = len(set(cleaned_exact_hashes))
+    cleaned_exact_duplicates = len(cleaned_exact_hashes) - cleaned_unique_count
     flagged = sum(1 for r in summaries if summary_flags(summary_of(r)))
-    coverage = (len(clean_summaries) / len(cleaned) * 100) if cleaned else 0
+    coverage = (len(clean_summaries) / cleaned_unique_count * 100) if cleaned_unique_count else 0
+    duplicates_removed = int(clean_profile.get("duplicate_rows_removed") or 0)
     tokenizer_metrics = {}
     if TOKENIZER_METRICS_PATH.exists():
         try:
@@ -443,6 +462,8 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
         "counts": {
             "raw": len(raw),
             "cleaned": len(cleaned),
+            "cleaned_unique": cleaned_unique_count,
+            "cleaned_exact_duplicates": cleaned_exact_duplicates,
             "summaries": len(summaries),
             "clean_summaries": len(clean_summaries),
             "train": len(train),
@@ -454,8 +475,16 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
         "summary_words": stats(summary_words),
         "compression_ratio": stats([round(v, 4) for v in compression]),
         "coverage_pct": round(coverage, 2),
+        "duplicates_removed_during_cleaning": duplicates_removed,
+        "cleaned_exact_duplicates": cleaned_exact_duplicates,
         "flagged_summaries": flagged,
         "cleaned_prefix_duplicates": len(cleaned_prefix_hashes) - len(set(cleaned_prefix_hashes)),
+        "clean_profile": {
+            "raw_rows": int(clean_profile.get("raw_rows") or 0),
+            "skipped_rows": int(clean_profile.get("skipped_rows") or 0),
+            "dedupe_enabled": bool(clean_profile.get("dedupe_enabled", False)),
+            "dedupe_hash": clean_profile.get("dedupe_hash", ""),
+        },
         "tokenization": {
             "vocab_size": int(tokenizer_metrics.get("vocab_size") or 0),
             "max_seq_len": int(tokenizer_metrics.get("max_seq_len") or 0),
@@ -473,13 +502,14 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test):
 def generate_report():
     raw = load_jsonl(RAW_PATH)
     cleaned = load_jsonl(CLEAN_PATH)
+    clean_profile = load_json(CLEAN_PROFILE_PATH)
     summaries = load_jsonl(SUM_PATH)
     clean_summaries = load_jsonl(CLEAN_SUM_PATH)
     train = load_jsonl(TRAIN_PATH)
     val = load_jsonl(VAL_PATH)
     test = load_jsonl(TEST_PATH)
 
-    metrics = build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test)
+    metrics = build_metrics(raw, cleaned, summaries, clean_summaries, train, val, test, clean_profile)
     charts = [
         chart_pipeline(metrics["counts"]),
         chart_lengths(raw, cleaned, clean_summaries),

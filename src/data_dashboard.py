@@ -1,5 +1,5 @@
 """
-GuppyLM Data Dashboard — Control panel for the email data pipeline.
+guppyemail Data Dashboard — Control panel for the email data pipeline.
 
 Tabs: Pipeline · Data · Quality · Charts · Summarization · System
 
@@ -108,7 +108,7 @@ def load_jsonl(path, limit=None):
     return out
 
 def email_hash(text):
-    return hashlib.md5(text.strip().encode()).hexdigest()
+    return hashlib.md5(normalize_text_hash(text).encode()).hexdigest()
 
 def deduplicate_records(records, existing_hashes):
     unique = []
@@ -138,9 +138,14 @@ def get_existing_hashes(path):
     return hashes
 
 def get_counts():
+    cleaned_path = PROC_DIR / "cleaned_emails.jsonl"
+    cleaned_rows = count_jsonl(cleaned_path)
+    cleaned_unique = unique_record_count(cleaned_path)
     return {
         "raw": count_jsonl(RAW_DIR / "enron_sample.jsonl"),
-        "cleaned": count_jsonl(PROC_DIR / "cleaned_emails.jsonl"),
+        "cleaned": cleaned_rows,
+        "cleaned_unique": cleaned_unique,
+        "cleaned_duplicates": max(0, cleaned_rows - cleaned_unique),
         "summarized": count_jsonl(SUM_DIR / "en_summaries.jsonl"),
         "training": count_jsonl(TRAIN_DIR / "train.jsonl") if (TRAIN_DIR / "train.jsonl").exists() else 0,
     }
@@ -149,7 +154,7 @@ def pipeline_count_markdowns():
     counts = get_counts()
     return (
         f"**{counts['raw']:,}**",
-        f"**{counts['cleaned']:,}**",
+        f"**{counts['cleaned_unique']:,}**",
         f"**{counts['summarized']:,}**",
         f"**{counts['training']:,}**",
     )
@@ -167,11 +172,32 @@ def write_jsonl(path, records):
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+def normalize_text_hash(text):
+    return " ".join((text or "").split()).strip().lower()
+
 def record_text(record):
     return record.get("cleaned_body") or record.get("text") or record.get("message") or ""
 
 def record_hash(record):
-    return email_hash(record_text(record)[:200])
+    return email_hash(normalize_text_hash(record_text(record)))
+
+def record_prefix_hash(record, chars=200):
+    return email_hash(normalize_text_hash(record_text(record))[:chars])
+
+def unique_record_count(path):
+    return len({record_hash(row) for row in load_jsonl(path)})
+
+def cleaned_profile():
+    path = PROC_DIR / "cleaned_emails.profile.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+SUMMARY_TYPES = {"summary", "no_summary_needed", "noise", "error", "malformed"}
+SUMMARY_QUALITIES = {"good", "weak", "noise"}
 
 def summary_flags(summary, max_chars=300):
     text = (summary or "").strip()
@@ -184,6 +210,8 @@ def summary_flags(summary, max_chars=300):
         flags.append("too_long")
     if lower.startswith(("error:", "empty:")):
         flags.append("generation_error")
+    if lower.startswith(("{", "[")) or "\"summary_type\"" in lower or '"quality"' in lower:
+        flags.append("json_fragment")
 
     leakage_terms = [
         "under 50 words", "final:", "let's craft", "the summary should",
@@ -206,6 +234,29 @@ def summary_flags(summary, max_chars=300):
 
     return flags
 
+def summary_row_flags(row, max_chars=300):
+    summary_type = str(row.get("summary_type", "")).strip().lower()
+    summary_quality = str(row.get("summary_quality", row.get("quality", ""))).strip().lower()
+    summary = row.get("summary", "")
+    flags = []
+
+    if summary_type and summary_type not in SUMMARY_TYPES:
+        flags.append("invalid_summary_type")
+    if summary_quality and summary_quality not in SUMMARY_QUALITIES:
+        flags.append("invalid_summary_quality")
+
+    if summary_type == "error":
+        flags.append("generation_error")
+    elif summary_type == "malformed":
+        flags.append("malformed_structured_output")
+    elif summary_type in {"no_summary_needed", "noise"}:
+        if summary:
+            flags.extend(summary_flags(summary, max_chars=max_chars))
+    else:
+        flags.extend(summary_flags(summary, max_chars=max_chars))
+
+    return sorted(set(flags))
+
 def quality_snapshot(max_summary_chars=300):
     raw = load_jsonl(RAW_DIR / "enron_sample.jsonl")
     cleaned = load_jsonl(PROC_DIR / "cleaned_emails.jsonl")
@@ -213,13 +264,15 @@ def quality_snapshot(max_summary_chars=300):
 
     raw_hashes = [record_hash(r) for r in raw]
     clean_hashes = [record_hash(r) for r in cleaned]
+    clean_prefix_hashes = [record_prefix_hash(r) for r in cleaned]
     summary_hashes = [record_hash(r) for r in summaries]
     clean_unique = set(clean_hashes)
     summary_unique = set(summary_hashes)
+    profile = cleaned_profile()
 
     bad_rows = []
     for i, r in enumerate(summaries):
-        flags = summary_flags(r.get("summary", ""), max_chars=max_summary_chars)
+        flags = summary_row_flags(r, max_chars=max_summary_chars)
         if flags:
             bad_rows.append({
                 "index": i,
@@ -232,10 +285,13 @@ def quality_snapshot(max_summary_chars=300):
     rows = [
         ["Raw rows", f"{len(raw):,}"],
         ["Cleaned rows", f"{len(cleaned):,}"],
+        ["Canonical unique cleaned rows", f"{len(clean_unique):,}"],
+        ["Duplicates removed during cleaning", f"{int(profile.get('duplicate_rows_removed', 0)):,}" if profile else "profile missing"],
         ["Summary rows", f"{len(summaries):,}"],
-        ["Raw duplicate-ish rows", f"{len(raw_hashes) - len(set(raw_hashes)):,}"],
-        ["Cleaned duplicate-ish rows", f"{len(clean_hashes) - len(clean_unique):,}"],
-        ["Summary duplicate-ish rows", f"{len(summary_hashes) - len(summary_unique):,}"],
+        ["Raw exact duplicate rows", f"{len(raw_hashes) - len(set(raw_hashes)):,}"],
+        ["Cleaned exact duplicate rows", f"{len(clean_hashes) - len(clean_unique):,}"],
+        ["Cleaned first-200 near-duplicate rows", f"{len(clean_prefix_hashes) - len(set(clean_prefix_hashes)):,}"],
+        ["Summary exact duplicate rows", f"{len(summary_hashes) - len(summary_unique):,}"],
         ["Unique cleaned covered by summaries", f"{len(clean_unique & summary_unique):,}/{len(clean_unique):,}"],
         ["Missing unique cleaned summaries", f"{len(clean_unique - summary_unique):,}"],
         ["Flagged summary rows", f"{len(bad_rows):,}"],
@@ -279,7 +335,7 @@ def build_clean_summaries(max_summary_chars=300):
             continue
         seen.add(h)
 
-        if summary_flags(r.get("summary", ""), max_chars=max_summary_chars):
+        if summary_row_flags(r, max_chars=max_summary_chars):
             skipped_bad += 1
             continue
         clean.append(r)
@@ -288,7 +344,8 @@ def build_clean_summaries(max_summary_chars=300):
     write_jsonl(out, clean)
     return (
         f"Wrote {len(clean):,} clean summaries to {out.relative_to(BASE_DIR)}. "
-        f"Skipped {skipped_dupe:,} duplicates and {skipped_bad:,} flagged summaries."
+        f"Skipped {skipped_dupe:,} duplicates and {skipped_bad:,} flagged summaries. "
+        "Structured no-summary/noise labels are retained for the quality fallback split."
     )
 
 def export_missing_cleaned():
@@ -324,7 +381,65 @@ def build_unique_cleaned():
 
     out = PROC_DIR / "cleaned_emails.unique.jsonl"
     write_jsonl(out, unique)
-    return f"Wrote {len(unique):,} unique cleaned rows to {out.relative_to(BASE_DIR)}."
+    duplicate_count = len(cleaned) - len(unique)
+    return (
+        f"Wrote {len(unique):,} canonical unique cleaned rows to {out.relative_to(BASE_DIR)}. "
+        f"Removed {duplicate_count:,} duplicate rows from the export. After rerunning Clean, "
+        "this should match data/processed/cleaned_emails.jsonl."
+    )
+
+def archive_summary_outputs():
+    pid = _load_pid() if "PID_FILE" in globals() else None
+    if pid and _pid_alive(pid):
+        return f"Summarization is running (PID {pid}); stop it before archiving outputs."
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_dir = SUM_DIR / "archive"
+    archived = []
+    for path in [
+        SUM_DIR / "en_summaries.jsonl",
+        SUM_DIR / "en_summaries.clean.jsonl",
+        SUM_DIR / "en_summaries.malformed.jsonl",
+    ]:
+        if not path.exists():
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived_path = archive_dir / f"{path.stem}.{timestamp}{path.suffix}"
+        counter = 1
+        while archived_path.exists():
+            archived_path = archive_dir / f"{path.stem}.{timestamp}.{counter}{path.suffix}"
+            counter += 1
+        os.replace(path, archived_path)
+        archived.append(f"{path.relative_to(BASE_DIR)} -> {archived_path.relative_to(BASE_DIR)}")
+
+    if not archived:
+        return "No summary outputs found to archive."
+    return "Archived summary outputs:\n" + "\n".join(archived) + "\nReady for a clean redo from cleaned_emails.unique.jsonl."
+
+def build_quality_training_split(val_pct=10, test_pct=5, seed=42, max_seq_len=512):
+    source = SUM_DIR / "en_summaries.clean.jsonl"
+    if not source.exists():
+        source = SUM_DIR / "en_summaries.jsonl"
+    script = BASE_DIR / "scripts" / "build_quality_training_data.py"
+    if not script.exists():
+        return "Script not found: scripts/build_quality_training_data.py"
+
+    cmd = [
+        sys.executable, str(script),
+        "--input", str(source),
+        "--output-dir", str(DATA_DIR / "training_quality"),
+        "--max-seq-len", str(int(max_seq_len)),
+        "--val-pct", str(float(val_pct)),
+        "--test-pct", str(float(test_pct)),
+        "--seed", str(int(seed)),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return "Quality training split timed out after 15 minutes."
+    if result.returncode != 0:
+        return f"Quality training split failed:\n{result.stderr.strip()}"
+    return result.stdout.strip()
 
 def generate_training_files(source_name="clean summaries", val_pct=10, test_pct=5, seed=42, max_summary_chars=300):
     source = SUM_DIR / "en_summaries.clean.jsonl"
@@ -384,11 +499,11 @@ def sync_pipeline_state():
     }
     state["stages"]["clean"] = {
         "status": "done" if counts["cleaned"] else "pending",
-        "count": counts["cleaned"],
+        "count": counts["cleaned_unique"],
         "time": datetime.now().isoformat(),
     }
     state["stages"]["summarize"] = {
-        "status": "done" if counts["summarized"] and counts["summarized"] >= counts["cleaned"] else ("partial" if counts["summarized"] else "pending"),
+        "status": "done" if counts["summarized"] and counts["summarized"] >= counts["cleaned_unique"] else ("partial" if counts["summarized"] else "pending"),
         "count": counts["summarized"],
         "time": datetime.now().isoformat(),
     }
@@ -398,7 +513,7 @@ def sync_pipeline_state():
         "time": datetime.now().isoformat(),
     }
     save_state(state)
-    return f"Synced state from files: raw={counts['raw']:,}, cleaned={counts['cleaned']:,}, summaries={counts['summarized']:,}, training={counts['training']:,}."
+    return f"Synced state from files: raw={counts['raw']:,}, cleaned_unique={counts['cleaned_unique']:,}, summaries={counts['summarized']:,}, training={counts['training']:,}."
 
 # ─── Hardware ────────────────────────────────────────────────────────────────
 
@@ -472,8 +587,8 @@ def chart_length_dist():
 
 def chart_funnel():
     c = get_counts()
-    labels = ["Raw", "Cleaned", "Summarized", "Training"]
-    vals = [c["raw"], c["cleaned"], c["summarized"], c["training"]]
+    labels = ["Raw", "Cleaned unique", "Summarized", "Training"]
+    vals = [c["raw"], c["cleaned_unique"], c["summarized"], c["training"]]
     if sum(vals) == 0:
         return None
     fig, ax = plt.subplots(figsize=(7, 2.5), facecolor=STYLE["bg"])
@@ -595,7 +710,7 @@ def run_clean():
             [sys.executable, str(script)],
             capture_output=True, text=True, timeout=600
         )
-        count = get_counts()["cleaned"]
+        count = get_counts()["cleaned_unique"]
         state["stages"]["clean"] = {"status": "done", "count": count, "time": datetime.now().isoformat()}
         save_state(state)
         out = result.stdout.strip()
@@ -623,8 +738,8 @@ def tab_pipeline():
                 raw_count = gr.Markdown(f"**{counts['raw']:,}**")
                 gr.Markdown("Raw", elem_classes=["muted"])
             with gr.Column():
-                cleaned_count = gr.Markdown(f"**{counts['cleaned']:,}**")
-                gr.Markdown("Cleaned", elem_classes=["muted"])
+                cleaned_count = gr.Markdown(f"**{counts['cleaned_unique']:,}**")
+                gr.Markdown("Cleaned Unique", elem_classes=["muted"])
             with gr.Column():
                 summarized_count = gr.Markdown(f"**{counts['summarized']:,}**")
                 gr.Markdown("Summarized", elem_classes=["muted"])
@@ -693,10 +808,7 @@ def dataset_subject(record):
     return record.get("subject", "")
 
 def dataset_flags(record):
-    summary = dataset_summary(record)
-    if not summary:
-        return ""
-    return ",".join(summary_flags(summary))
+    return ",".join(summary_row_flags(record))
 
 def load_dataset_records(name):
     return load_jsonl(DATASET_FILES.get(name, RAW_DIR / "enron_sample.jsonl"))
@@ -862,10 +974,12 @@ def tab_quality():
 
         with gr.Row():
             export_bad_btn = gr.Button("Export Bad Summaries")
+            archive_summary_btn = gr.Button("Archive Summary Outputs")
             clean_btn = gr.Button("Build Clean Summaries", variant="primary")
+            quality_train_btn = gr.Button("Build Quality Training Split", variant="primary")
             unique_clean_btn = gr.Button("Export Unique Cleaned")
             missing_btn = gr.Button("Export Missing Summary Inputs")
-            action_out = gr.Textbox(label="Action Output", lines=3, interactive=False)
+            action_out = gr.Textbox(label="Action Output", lines=8, interactive=False)
 
         gr.HTML("<hr style='border:none;border-top:1px solid #2a2a3e;margin:16px 0'>")
 
@@ -884,7 +998,9 @@ def tab_quality():
 
         scan_btn.click(run_quality_scan, inputs=[max_summary_chars], outputs=[metrics, flagged, quality_note])
         export_bad_btn.click(export_bad_summaries, inputs=[max_summary_chars], outputs=[action_out])
+        archive_summary_btn.click(archive_summary_outputs, outputs=[action_out])
         clean_btn.click(build_clean_summaries, inputs=[max_summary_chars], outputs=[action_out])
+        quality_train_btn.click(build_quality_training_split, inputs=[val_pct, test_pct, seed], outputs=[action_out])
         unique_clean_btn.click(build_unique_cleaned, outputs=[action_out])
         missing_btn.click(export_missing_cleaned, outputs=[action_out])
         train_btn.click(generate_training_files, inputs=[source_sel, val_pct, test_pct, seed, max_summary_chars], outputs=[train_out])
@@ -895,12 +1011,14 @@ def tab_quality():
 TOKENIZER_SOURCE_FILES = {
     "clean summaries": SUM_DIR / "en_summaries.clean.jsonl",
     "all summaries": SUM_DIR / "en_summaries.jsonl",
+    "quality filtered summaries": DATA_DIR / "training_quality" / "filtered_source.jsonl",
 }
 
 def tokenizer_status_rows():
     rows = [
         ["Clean summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.clean.jsonl'):,}"],
         ["All summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.jsonl'):,}"],
+        ["Quality filtered summaries", f"{count_jsonl(DATA_DIR / 'training_quality' / 'filtered_source.jsonl'):,}"],
         ["Train ChatML", f"{count_jsonl(TRAIN_DIR / 'train.jsonl'):,}"],
         ["Eval ChatML", f"{count_jsonl(TRAIN_DIR / 'eval.jsonl'):,}"],
         ["Validation alias", f"{count_jsonl(TRAIN_DIR / 'val.jsonl'):,}"],
@@ -1190,7 +1308,7 @@ def tab_tokenizer():
         with gr.Row():
             source_sel = gr.Dropdown(
                 choices=list(TOKENIZER_SOURCE_FILES.keys()),
-                value="clean summaries",
+                value="quality filtered summaries",
                 label="Source summaries",
             )
             vocab_size = gr.Number(label="Vocabulary size", value=4096, precision=0)
@@ -1209,7 +1327,7 @@ def tab_tokenizer():
 
         gr.Markdown(
             "`512` is the project default for email summarization. Keep this value "
-            "matched with the future training model's `GuppyConfig.max_seq_len`."
+            "matched with guppyemail's training `max_seq_len`."
         )
 
         with gr.Row():
@@ -1348,6 +1466,48 @@ def _detect_stall(current_count):
 
 _process = None
 
+def summarization_input_stats(input_file):
+    input_path = PROC_DIR / input_file
+    input_hashes = []
+    seen = set()
+    for row in load_jsonl(input_path):
+        h = record_hash(row)
+        if h in seen:
+            continue
+        seen.add(h)
+        input_hashes.append(h)
+
+    summary_hashes = {record_hash(row) for row in load_jsonl(SUM_DIR / "en_summaries.jsonl")}
+    covered = len(set(input_hashes) & summary_hashes)
+    total = len(input_hashes)
+    return {
+        "input_rows": total,
+        "output_rows": count_jsonl(SUM_DIR / "en_summaries.jsonl"),
+        "covered_rows": covered,
+        "remaining_rows": max(0, total - covered),
+    }
+
+def summarization_cost_markdown(model, max_tok, input_file):
+    prices = {
+        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "deepseek-v4-flash": {"input": 0.07, "output": 0.28},
+        "qwen3.5-plus": {"input": 0.40, "output": 2.40},
+    }
+    p = prices.get(model, prices["gpt-4o-mini"])
+    stats = summarization_input_stats(input_file)
+    summarized = stats["covered_rows"]
+    output_rows = stats["output_rows"]
+    remaining = stats["remaining_rows"]
+    input_cost = (remaining * 500 / 1e6) * p["input"]
+    output_cost = (remaining * int(max_tok) / 1e6) * p["output"]
+    total = input_cost + output_cost
+    return (
+        f"Input: {stats['input_rows']:,} unique rows  ·  "
+        f"{summarized:,} covered  ·  {remaining:,} remaining  ·  "
+        f"{output_rows:,} output rows\n"
+        f"Est. cost: **${total:.2f}** (input ${input_cost:.2f} + output ${output_cost:.2f})"
+    )
+
 def tab_summarization():
     global _process
 
@@ -1355,52 +1515,63 @@ def tab_summarization():
         with gr.Row():
             with gr.Column():
                 model_input = gr.Dropdown(
-                    choices=["deepseek-v4-flash", "gpt-4o-mini"],
+                    choices=["deepseek-v4-flash", "gpt-4o-mini", "qwen3.5-plus"],
                     value="deepseek-v4-flash",
                     label="Model"
                 )
-                api_key_input = gr.Textbox(label="API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
-                base_url_input = gr.Textbox(label="Base URL", value=os.environ.get("OPENAI_BASE_URL", ""))
+                provider_input = gr.Dropdown(
+                    choices=["auto", "openai", "dashscope"],
+                    value="auto",
+                    label="Provider"
+                )
+                api_key_input = gr.Textbox(
+                    label="API Key",
+                    type="password",
+                    value=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY", ""),
+                )
+                base_url_input = gr.Textbox(
+                    label="Base URL",
+                    value=os.environ.get("DASHSCOPE_BASE_URL", ""),
+                )
 
             with gr.Column():
-                workers_slider = gr.Slider(minimum=1, maximum=25, value=3, step=1, label="Concurrent Workers")
-                max_tokens = gr.Slider(minimum=50, maximum=500, value=120, step=10, label="Max Tokens")
+                workers_slider = gr.Slider(minimum=1, maximum=100, value=3, step=1, label="Concurrent Workers")
+                max_tokens = gr.Slider(minimum=50, maximum=800, value=300, step=10, label="Max Tokens")
                 cooldown_every = gr.Slider(minimum=50, maximum=1000, value=100, step=50, label="Pause every N reqs")
                 cooldown_secs = gr.Slider(minimum=5, maximum=120, value=15, step=5, label="Pause duration (s)")
                 max_per_batch = gr.Slider(minimum=500, maximum=3000, value=1500, step=500, label="Restart after N requests")
                 input_source = gr.Dropdown(
                     choices=["cleaned_emails.jsonl", "missing_summaries.jsonl", "cleaned_emails.unique.jsonl"],
-                    value="cleaned_emails.jsonl",
+                    value="cleaned_emails.unique.jsonl",
                     label="Input file",
+                )
+                reset_output = gr.Checkbox(
+                    label="Archive existing summary outputs before start",
+                    value=False,
                 )
 
         with gr.Row():
             start_btn = gr.Button("Start Summarization", variant="primary")
             stop_btn = gr.Button("Stop", variant="stop")
+            archive_btn = gr.Button("Archive Summary Outputs")
 
         status_text = gr.Markdown("Status: **Idle**")
-        cost_estimate = gr.Markdown("")
+        cost_estimate = gr.Markdown(summarization_cost_markdown("deepseek-v4-flash", 300, "cleaned_emails.unique.jsonl"))
         log_area = gr.Code(label="Live Log", language=None, lines=10, interactive=False)
         log_visible = gr.Checkbox(label="Show Log", value=True)
 
-        def update_cost(model, max_tok):
-            prices = {
-                "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-                "deepseek-v4-flash": {"input": 0.07, "output": 0.28},
-            }
-            p = prices.get(model, prices["gpt-4o-mini"])
-            cleaned = count_jsonl(PROC_DIR / "cleaned_emails.jsonl")
-            summarized = count_jsonl(SUM_DIR / "en_summaries.jsonl")
-            remaining = cleaned - summarized
-            input_cost = (remaining * 500 / 1e6) * p["input"]
-            output_cost = (remaining * max_tok / 1e6) * p["output"]
-            total = input_cost + output_cost
-            return f"Emails: {cleaned:,} cleaned  ·  {summarized:,} done  ·  {remaining:,} remaining\nEst. cost: **${total:.2f}** (input ${input_cost:.2f} + output ${output_cost:.2f})"
+        def update_cost(model, max_tok, input_file):
+            return summarization_cost_markdown(model, max_tok, input_file)
 
-        model_input.change(update_cost, inputs=[model_input, max_tokens], outputs=[cost_estimate])
-        max_tokens.change(update_cost, inputs=[model_input, max_tokens], outputs=[cost_estimate])
+        def provider_for_model(model):
+            return "dashscope" if str(model or "").startswith("qwen") else "openai"
 
-        def start_summarization(model, api_key, base_url, max_tok, workers, cooldown_n, cooldown_s, batch_limit, input_file):
+        model_input.change(update_cost, inputs=[model_input, max_tokens, input_source], outputs=[cost_estimate])
+        model_input.change(provider_for_model, inputs=[model_input], outputs=[provider_input])
+        max_tokens.change(update_cost, inputs=[model_input, max_tokens, input_source], outputs=[cost_estimate])
+        input_source.change(update_cost, inputs=[model_input, max_tokens, input_source], outputs=[cost_estimate])
+
+        def start_summarization(model, provider, api_key, base_url, max_tok, workers, cooldown_n, cooldown_s, batch_limit, input_file, reset_existing):
             global _process
 
             pid = _load_pid()
@@ -1418,25 +1589,32 @@ def tab_summarization():
             env = os.environ.copy()
             if api_key:
                 env["OPENAI_API_KEY"] = api_key
+                env["DASHSCOPE_API_KEY"] = api_key
             if base_url:
                 env["OPENAI_BASE_URL"] = base_url
+                env["DASHSCOPE_BASE_URL"] = base_url
 
             cmd = [
                 sys.executable, str(script),
                 "--model", model,
+                "--provider", provider,
                 "--workers", str(int(workers)),
                 "--max-tokens", str(int(max_tok)),
+                "--temperature", "0",
                 "--input", str(input_path),
                 "--cooldown-every", str(int(cooldown_n)),
                 "--cooldown-secs", str(int(cooldown_s)),
                 "--max-per-batch", str(int(batch_limit)),
                 "--log", log_path,
             ]
+            if reset_existing:
+                cmd.append("--reset-output")
 
             try:
                 # Clear old log
                 Path(log_path).write_text("")
                 err_path = str(DATA_DIR / "summaries" / "summarize.err.log")
+                Path(err_path).write_text("")
                 err_file = open(err_path, "a", buffering=1)
                 _process = subprocess.Popen(
                     cmd,
@@ -1472,11 +1650,12 @@ def tab_summarization():
             _clear_pid()
             return "Status: **{}**".format("Stopped" if killed else "No process running"), tail_log()
 
-        def poll_status():
+        def poll_status(input_file):
             global _process, _last_count
 
-            summarized = count_jsonl(SUM_DIR / "en_summaries.jsonl")
-            cleaned = count_jsonl(PROC_DIR / "cleaned_emails.jsonl")
+            stats = summarization_input_stats(input_file)
+            summarized = stats["covered_rows"]
+            cleaned = stats["input_rows"]
             stall = _detect_stall(summarized)
 
             pid = _load_pid()
@@ -1500,13 +1679,12 @@ def tab_summarization():
 
             return "Status: **Idle**", tail_log()
 
-        start_btn.click(start_summarization, inputs=[model_input, api_key_input, base_url_input, max_tokens, workers_slider, cooldown_every, cooldown_secs, max_per_batch, input_source], outputs=[status_text, log_area])
+        start_btn.click(start_summarization, inputs=[model_input, provider_input, api_key_input, base_url_input, max_tokens, workers_slider, cooldown_every, cooldown_secs, max_per_batch, input_source, reset_output], outputs=[status_text, log_area])
         stop_btn.click(stop_summarization, outputs=[status_text, log_area])
+        archive_btn.click(lambda: (archive_summary_outputs(), tail_log()), outputs=[status_text, log_area])
 
         status_timer = gr.Timer(3)
-        status_timer.tick(poll_status, outputs=[status_text, log_area])
-
-        update_cost("deepseek-v4-flash", 120)
+        status_timer.tick(poll_status, inputs=[input_source], outputs=[status_text, log_area])
 
 # ─── Tab: System ─────────────────────────────────────────────────────────────
 
@@ -1617,8 +1795,8 @@ def main():
     .slider input { background: #161822 !important; }
     """
 
-    with gr.Blocks(title="GuppyLM") as app:
-        gr.Markdown("GuppyLM · Data Pipeline", elem_id="header")
+    with gr.Blocks(title="guppyemail") as app:
+        gr.Markdown("guppyemail · Data Pipeline", elem_id="header")
 
         tab_pipeline()
         tab_data()

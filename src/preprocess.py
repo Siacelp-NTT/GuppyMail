@@ -187,6 +187,7 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+    raw_count = 0
     cleaned_count = 0
     skipped_count = 0
     duplicate_count = 0
@@ -198,6 +199,7 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
         lines = f.readlines()
 
     for line in tqdm(lines, desc="Processing emails"):
+        raw_count += 1
         email = json.loads(line)
         raw_text = email.get('text', email.get('message', email.get('body', '')))
 
@@ -243,14 +245,31 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
         for record in results:
             f.write(json.dumps(record) + '\n')
 
+    profile = {
+        "input_path": input_path,
+        "output_path": output_path,
+        "raw_rows": raw_count,
+        "cleaned_unique_rows": cleaned_count,
+        "skipped_rows": skipped_count,
+        "duplicate_rows_removed": duplicate_count,
+        "translated_rows": translated_count,
+        "dedupe_enabled": bool(dedupe),
+        "dedupe_hash": "normalized_full_cleaned_body",
+    }
+    profile_path = output_path.replace(".jsonl", ".profile.json")
+    with open(profile_path, "w") as f:
+        json.dump(profile, f, indent=2)
+
     print(f"\nProcessing complete:")
-    print(f"  Cleaned:   {cleaned_count}")
-    print(f"  Skipped:   {skipped_count}")
+    print(f"  Raw rows:             {raw_count}")
+    print(f"  Cleaned unique rows:  {cleaned_count}")
+    print(f"  Skipped short/noisy:  {skipped_count}")
     if dedupe:
-        print(f"  Duplicates:{duplicate_count}")
+        print(f"  Duplicates removed:  {duplicate_count}")
     if translate_vi:
-        print(f"  Translated: {translated_count}")
-    print(f"  Saved to:  {output_path}")
+        print(f"  Translated:          {translated_count}")
+    print(f"  Saved to:            {output_path}")
+    print(f"  Profile:             {profile_path}")
 
     # Save a few before/after examples
     examples_path = output_path.replace('.jsonl', '_examples.txt')
@@ -269,7 +288,7 @@ def process_dataset(input_path: str, output_path: str, translate_vi: bool = Fals
 
 
 if __name__ == '__main__':
-    os.chdir('/mnt/d/documents/year-2/lab/project/email-summarizer')
+    os.chdir(os.path.dirname(__file__) + '/..')
     process_dataset(
         input_path='data/raw/enron_sample.jsonl',
         output_path='data/processed/cleaned_emails.jsonl',
