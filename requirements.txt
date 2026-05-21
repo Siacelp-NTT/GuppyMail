@@ -16,6 +16,7 @@ psutil>=5.9.0
 # Evaluation
 rouge-score>=0.1.2
 pytest>=8.0.0
+onnx>=1.16.0
 
 
 # Utils
