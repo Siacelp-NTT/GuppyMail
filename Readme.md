@@ -1,136 +1,185 @@
-# guppyemail - Email Summarizer Prototype
+# GuppyEmail - Email Summarizer Prototype
 
-A tiny (~9M parameter) language model trained **from scratch** to summarize emails. No PhD required. No massive GPU. One Colab notebook, 5 minutes, and you have your own LLM.
+GuppyEmail is a student-scale email summarization project. It prepares an email dataset, trains a tiny decoder-only transformer from scratch, evaluates the model, and wraps it in a Gradio app with priority classification and action item extraction.
 
-It won't write like a corporate assistant. But it'll tell you what the email says in a fun, conversational way.
+The project is intentionally small and explainable. It is not a production assistant, but it demonstrates the full path from raw email data to a working summarization demo and final report artifacts.
 
-```
-Email: "Dear team, the Q3 budget review meeting has been moved from Feb 10 to Feb 5..."
+## Current Highlights
 
-guppyemail: "hey, meeting moved to feb 5. bring your reports. be there by friday."
-```
-
-## Features
-
-- 📧 **Gmail Integration** - Connect your Gmail to fetch real emails
-- **guppyemail Tiny LLM** - 9M params, trained from scratch, ~34MB checkpoint
-- ⚡ **5-Minute Training** - Runs on free Colab GPU (T4)
-- 📊 **Priority Classification** - Urgent / Important / Normal / Low
-- ✅ **Action Item Extraction** - Finds tasks and deadlines
-- 🌐 **Gradio Web UI** - Clean, interactive demo
+- Small transformer model, about 8.7M parameters.
+- Enron email cleaning and quality-filtered training data.
+- API-generated reference summaries for supervised learning.
+- Gradio app for email summarization.
+- Optional Gmail API path.
+- Rule-based priority classification: urgent, important, normal, low.
+- Rule-based extraction for tasks, deadlines, requests, and meetings.
+- Phase 5 report artifacts, charts, human-evaluation survey, and visual codebase guide.
 
 ## Quick Start
 
-### 1. Setup
-
 ```bash
-# Create virtual environment
 python3 -m venv .venv
-source .venv/bin/activate        # WSL/Linux
-.venv\Scripts\activate           # Windows
-
-# Install dependencies
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Prepare Training Data
+Run the local app after model artifacts are available:
 
 ```bash
-# Download Enron emails and generate summaries
-export OPENAI_API_KEY="your-key"  # For summary generation (~$0.20 total)
-python scripts/download_enron.py
-python src/preprocess.py
-python scripts/generate_summaries.py
-```
-
-### 3. Train the Model
-
-Open `notebooks/train_email_guppylm.ipynb` in **Google Colab** (free GPU):
-1. Upload `training_quality.zip`
-2. Run all cells (~5 minutes)
-3. Download `best_model.pt`, `config.json`, and the evaluation JSON files
-
-### 4. Run the App
-
-```bash
-# Place trained model files in checkpoints/
 python app.py
 ```
 
-Open `http://localhost:7860` in your browser.
+Open:
 
-## Project Structure
-
-```
-email-summarizer/
-├── README.md
-├── PROJECT-PLAN.md               # Full project plan
-├── requirements.txt
-├── config.py                     # Model + training config
-├── model.py                      # guppyemail vanilla transformer
-├── dataset.py                    # Data loading and batching
-├── train.py                      # Training loop
-├── inference.py                  # Chat/inference engine
-├── notebooks/
-│   └── train_email_guppylm.ipynb # Colab training notebook
-├── src/
-│   ├── gmail_client.py           # Gmail API wrapper
-│   ├── preprocess.py             # Email cleaning pipeline
-│   ├── classifier.py             # Priority classification
-│   ├── action_extractor.py       # Action item extraction
-│   └── pipeline.py               # End-to-end pipeline
-├── scripts/
-│   ├── download_enron.py         # Download Enron dataset
-│   ├── generate_summaries.py     # LLM distillation for training data
-│   └── evaluate.py               # ROUGE + perplexity evaluation
-├── data/                         # Datasets (gitignored)
-├── checkpoints/                  # Trained model weights
-└── report/                       # Final report
+```text
+http://localhost:7860
 ```
 
-## Architecture
+## Data Pipeline
 
-| Component | Value |
-|---|---|
-| **Parameters** | 8.7M |
-| **Architecture** | Vanilla transformer |
-| **Layers** | 6 |
-| **Hidden dim** | 384 |
-| **Attention heads** | 6 |
-| **FFN** | 768 (ReLU) |
-| **Vocabulary** | 4,096 BPE tokens |
-| **Max sequence** | 512 tokens |
-| **Model size** | ~10MB |
-| **Training time** | Depends |
+```bash
+python scripts/download_enron.py
+python src/preprocess.py
+python scripts/generate_summaries.py --workers 3
+python scripts/build_quality_training_data.py
+python scripts/train_tokenizer.py
+```
 
-No GQA, no RoPE, no SwiGLU. As simple as it gets.
+`scripts/generate_summaries.py` requires `OPENAI_API_KEY` or `--api-key`. Avoid running full API jobs unless you intend to regenerate labels.
 
-## guppyemail
+## Training
 
-guppyemail is derived from the GuppyLM-style small-transformer architecture, but it is trained on a different email summarization dataset with a different scope.
+Training is designed for Google Colab:
 
-- **A tiny LLM** - from tokenization to transformer to training loop
-- **Training takes 5 minutes** - not 2-4 hours
-- **It's fun** - quirky, conversational summaries make a memorable demo
+1. Open `notebooks/train_email_guppylm.ipynb`.
+2. Upload the prepared training data.
+3. Train the model.
+4. Download `best_model.pt`, `config.json`, tokenizer, and evaluation outputs.
+5. Place local runtime artifacts under `checkpoints/`, `models/`, or `data/training_quality/` as expected by the app.
 
-The trade-off: summaries won't be polished corporate prose. They'll be short, casual, and a little weird. That's a feature.
+Model configuration used by the current evaluation:
+
+| Field | Value |
+|---|---:|
+| Parameters | about 8.7M |
+| Layers | 6 |
+| Hidden dimension | 384 |
+| Attention heads | 6 |
+| FFN hidden | 768 |
+| Vocabulary | 4,096 BPE tokens |
+| Max sequence length | 512 |
 
 ## Evaluation
 
-| Metric | Target |
-|---|---|
-| **Training loss** | < 3.0 |
-| **ROUGE-L** | ≥ 0.20 |
-| **Perplexity** | < 50 |
-| **Inference time** | < 2 seconds (CPU) |
-| **Model size** | < 20MB |
+Run automated evaluation:
 
-Run `python scripts/evaluate.py`.
+```bash
+python scripts/evaluate.py
+```
+
+Current saved metrics in `evaluation/eval_results.json`:
+
+| Metric | Value |
+|---|---:|
+| Test perplexity | about 13.0 |
+| ROUGE-1 | about 0.372 |
+| ROUGE-2 | about 0.169 |
+| ROUGE-L | about 0.322 |
+
+The random-weight baseline in `evaluation/baseline_results.json` has perplexity around 4547, so the trained model is substantially better than the untrained baseline.
+
+## Phase 5 Artifacts
+
+Generate final report artifacts:
+
+```bash
+python scripts/aggregate_human_eval.py
+python scripts/generate_human_eval_packet.py
+python scripts/generate_artifacts.py
+python scripts/plot_metrics.py
+python scripts/generate_codebase_guide.py
+```
+
+## Project Structure
+
+```text
+email-summarizer/
+├── app.py                         # Gradio app
+├── inference.py                   # Runtime model inference wrapper
+├── config.py, model.py             # Compatibility exports
+├── src/
+│   ├── preprocess.py               # Email cleaning
+│   ├── pipeline.py                 # End-to-end app pipeline
+│   ├── guppyemail_model.py         # Transformer model
+│   ├── guppyemail_data.py          # ChatML data helpers
+│   ├── classifier.py               # Priority classification
+│   ├── action_extractor.py         # Action item extraction
+│   ├── gmail_client.py             # Gmail API wrapper
+│   └── data_dashboard.py           # Data dashboard
+├── scripts/
+│   ├── download_enron.py
+│   ├── generate_summaries.py
+│   ├── build_quality_training_data.py
+│   ├── train_tokenizer.py
+│   ├── evaluate.py
+│   ├── export_model.py
+│   ├── generate_artifacts.py
+│   ├── plot_metrics.py
+│   ├── aggregate_human_eval.py
+│   └── generate_codebase_guide.py
+├── data/                           # Generated datasets, ignored by git
+├── evaluation/                     # Evaluation JSON and Phase 5 artifacts
+├── report/                         # Report, presentation, screenshots, guide
+├── notebooks/                      # Colab training notebooks
+├── tests/                          # Pytest tests
+└── tasks/                          # Project task specs, ignored by git
+```
+
+## Testing and Validation
+
+Run the available tests:
+
+```bash
+pytest
+```
+
+Run syntax checks:
+
+```bash
+python3 -m py_compile app.py inference.py src/*.py scripts/*.py
+```
+
+For app-level validation, run:
+
+```bash
+python app.py
+```
+
+## Limitations
+
+- GuppyEmail is a tiny model and can repeat phrases or miss details.
+- Enron email data does not fully represent modern personal email.
+- API-generated labels can contain bias or imperfect summaries.
+- Priority classification and action extraction are rule-based, so they are transparent but brittle.
+- Human evaluation requires completed independent survey responses before it can be considered final.
+- Gmail integration must be used carefully because it can expose private data.
+
+## Security
+
+Do not commit secrets or private data. The repository ignores common sensitive artifacts such as:
+
+- `credentials.json`
+- `token.json`
+- `.env`
+- raw data under `data/raw/`
+- generated model checkpoints
+- exported model binaries
+
+Keep API keys in environment variables.
 
 ## References
 
-- [GuppyLM GitHub](https://github.com/arman-bd/guppylm)
-- [GuppyLM HuggingFace](https://huggingface.co/arman-bd/guppylm-9M)
-- [Article: "Build Your Own LLM in 5 Minutes"](https://arman-bd.medium.com/build-your-own-llm-in-5-minutes-i-made-mine-talk-like-a-fish-e20c338a3d14)
-- [Datasets](https://huggingface.co/datasets/jacquelinehe/enron-emails)
-- [Proccessed Data](https://huggingface.co/datasets/Siacelp/eron-mails-summarized)
+- GuppyLM: https://github.com/arman-bd/guppylm
+- GuppyLM model card: https://huggingface.co/arman-bd/guppylm-9M
+- Enron email dataset source used by the project: https://huggingface.co/datasets/jacquelinehe/enron-emails
+- Summarized email dataset: https://huggingface.co/datasets/Siacelp/eron-mails-summarized
