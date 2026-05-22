@@ -10,7 +10,9 @@ from src.guppyemail_config import GuppyEmailConfig
 
 
 class CausalSelfAttention(nn.Module):
+    """Represent CausalSelfAttention behavior."""
     def __init__(self, config: GuppyEmailConfig):
+        """Initialize the instance."""
         super().__init__()
         if config.d_model % config.n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads")
@@ -21,6 +23,7 @@ class CausalSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the forward pass."""
         batch_size, seq_len, channels = x.shape
         qkv = self.qkv(x).view(
             batch_size, seq_len, 3, self.n_heads, self.head_dim
@@ -39,7 +42,9 @@ class CausalSelfAttention(nn.Module):
 
 
 class FeedForward(nn.Module):
+    """Represent FeedForward behavior."""
     def __init__(self, config: GuppyEmailConfig):
+        """Initialize the instance."""
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(config.d_model, config.ffn_hidden),
@@ -49,11 +54,14 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the forward pass."""
         return self.net(x)
 
 
 class Block(nn.Module):
+    """Represent Block behavior."""
     def __init__(self, config: GuppyEmailConfig):
+        """Initialize the instance."""
         super().__init__()
         self.ln1 = nn.LayerNorm(config.d_model)
         self.attn = CausalSelfAttention(config)
@@ -61,13 +69,16 @@ class Block(nn.Module):
         self.ffn = FeedForward(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the forward pass."""
         x = x + self.attn(self.ln1(x))
         x = x + self.ffn(self.ln2(x))
         return x
 
 
 class GuppyEmailLM(nn.Module):
+    """Represent GuppyEmailLM behavior."""
     def __init__(self, config: GuppyEmailConfig):
+        """Initialize the instance."""
         super().__init__()
         self.config = config
         self.tok_emb = nn.Embedding(config.vocab_size, config.d_model)
@@ -80,6 +91,7 @@ class GuppyEmailLM(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module) -> None:
+        """Internal helper for init weights."""
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -90,6 +102,7 @@ class GuppyEmailLM(nn.Module):
     def forward(
         self, idx: torch.Tensor, labels: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Run the forward pass."""
         _, seq_len = idx.shape
         if seq_len > self.config.max_seq_len:
             raise ValueError(
@@ -119,6 +132,7 @@ class GuppyEmailLM(nn.Module):
         temperature: float = 0.8,
         top_k: int = 50,
     ) -> torch.Tensor:
+        """Handle generate."""
         self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.max_seq_len :]
@@ -135,4 +149,5 @@ class GuppyEmailLM(nn.Module):
         return idx
 
     def parameter_count(self) -> int:
+        """Handle parameter count."""
         return sum(param.numel() for param in self.parameters())

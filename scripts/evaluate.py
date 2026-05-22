@@ -26,6 +26,7 @@ from src.guppyemail_postprocess import fallback_to_email
 
 
 def select_device(name: str) -> torch.device:
+    """Handle select device."""
     if name != "auto":
         return torch.device(name)
     if torch.cuda.is_available():
@@ -36,6 +37,7 @@ def select_device(name: str) -> torch.device:
 
 
 def to_dict(value) -> dict:
+    """Handle to dict."""
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -46,6 +48,7 @@ def to_dict(value) -> dict:
 
 
 def load_config_from_checkpoint(ckpt: dict, checkpoint_path: Path) -> GuppyEmailConfig:
+    """Load config from checkpoint."""
     cfg = to_dict(ckpt.get("model_config")) or to_dict(ckpt.get("config"))
     if not cfg:
         config_path = checkpoint_path.parent / "config.json"
@@ -58,6 +61,7 @@ def load_config_from_checkpoint(ckpt: dict, checkpoint_path: Path) -> GuppyEmail
 def load_model(
     checkpoint_path: Path, device: torch.device
 ) -> tuple[GuppyEmailLM, GuppyEmailConfig, dict]:
+    """Load model."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if not isinstance(ckpt, dict):
         raise TypeError(f"Unsupported checkpoint format: {type(ckpt).__name__}")
@@ -77,6 +81,7 @@ def compute_perplexity(
     device: torch.device,
     max_batches: int | None = None,
 ) -> tuple[float, float, int]:
+    """Handle compute perplexity."""
     total_loss = 0.0
     total_tokens = 0
     model.eval()
@@ -100,6 +105,7 @@ def compute_perplexity(
 
 
 def build_prompt(email_text: str) -> str:
+    """Build prompt."""
     return f"<|im_start|>user\n{email_text}<|im_end|>\n<|im_start|>assistant\n"
 
 
@@ -113,6 +119,7 @@ def generate_summary(
     temperature: float,
     top_k: int,
 ) -> str:
+    """Generate summary."""
     prompt_ids = tokenizer.encode(build_prompt(email_text)).ids
     prompt_ids = prompt_ids[-model.config.max_seq_len :]
     input_tensor = torch.tensor([prompt_ids], dtype=torch.long, device=device)
@@ -142,6 +149,7 @@ def compute_rouge(
     use_generic_fallback: bool,
     fallback_max_chars: int,
 ) -> dict:
+    """Handle compute rouge."""
     sample_rows = rows if max_samples == 0 else rows[:max_samples]
     scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
 
@@ -193,6 +201,7 @@ def compute_rouge(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Evaluate guppyemail on the test split.")
     parser.add_argument("--checkpoint", default=str(BASE_DIR / "checkpoints" / "best_model.pt"))
     parser.add_argument("--tokenizer", default=str(BASE_DIR / "data" / "training_quality" / "tokenizer.json"))
@@ -223,6 +232,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     args = parse_args()
     random.seed(args.seed)
     torch.manual_seed(args.seed)

@@ -21,6 +21,7 @@ from src.guppyemail_model import GuppyEmailLM
 
 
 def load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
+    """Load checkpoint."""
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise TypeError(f"Unsupported checkpoint format: {type(payload).__name__}")
@@ -28,6 +29,7 @@ def load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
 
 
 def load_config(ckpt: dict[str, Any], checkpoint_path: Path) -> GuppyEmailConfig:
+    """Load config."""
     cfg = ckpt.get("model_config") or ckpt.get("config")
     if not cfg:
         config_path = checkpoint_path.with_name("config.json")
@@ -38,6 +40,7 @@ def load_config(ckpt: dict[str, Any], checkpoint_path: Path) -> GuppyEmailConfig
 
 
 def state_dict_from_checkpoint(ckpt: dict[str, Any]) -> dict[str, torch.Tensor]:
+    """Handle state dict from checkpoint."""
     state_dict = ckpt.get("model_state_dict", ckpt)
     if not isinstance(state_dict, dict):
         raise TypeError("Checkpoint does not contain a state dict.")
@@ -48,6 +51,7 @@ def convert_state_dict(
     state_dict: dict[str, torch.Tensor],
     dtype: str,
 ) -> dict[str, torch.Tensor]:
+    """Handle convert state dict."""
     state_dict = {
         key: value
         for key, value in state_dict.items()
@@ -64,14 +68,17 @@ def convert_state_dict(
 
 
 def file_size_mb(path: Path) -> float:
+    """Handle file size mb."""
     return path.stat().st_size / 1_000_000
 
 
 def dir_size_mb(path: Path) -> float:
+    """Handle dir size mb."""
     return sum(file.stat().st_size for file in path.rglob("*") if file.is_file()) / 1_000_000
 
 
 def write_config(config: GuppyEmailConfig, output_path: Path) -> None:
+    """Write config."""
     output_path.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
 
 
@@ -84,6 +91,7 @@ def write_manifest(
     dtype: str,
     model_file: Path,
 ) -> None:
+    """Write manifest."""
     model = GuppyEmailLM(config)
     manifest = {
         "model": "guppyemail",
@@ -110,6 +118,7 @@ def export_pytorch(
     output_dir: Path,
     dtype: str,
 ) -> Path:
+    """Handle export pytorch."""
     ckpt = load_checkpoint(checkpoint_path)
     config = load_config(ckpt, checkpoint_path)
     state_dict = convert_state_dict(state_dict_from_checkpoint(ckpt), dtype)
@@ -131,6 +140,7 @@ def export_onnx(
     dtype: str,
     require_onnx: bool,
 ) -> bool:
+    """Handle export onnx."""
     try:
         import onnx  # noqa: F401
     except ImportError as exc:
@@ -178,6 +188,7 @@ def export_onnx(
 
 
 def copy_minimal_sources(output_dir: Path) -> None:
+    """Handle copy minimal sources."""
     shutil.copy2(BASE_DIR / "inference.py", output_dir / "inference.py")
     src_dir = output_dir / "src"
     src_dir.mkdir(exist_ok=True)
@@ -191,6 +202,7 @@ def copy_minimal_sources(output_dir: Path) -> None:
 
 
 def write_runner(output_dir: Path) -> None:
+    """Write runner."""
     runner = '''#!/usr/bin/env python3
 """Interactive runner for exported guppyemail."""
 
@@ -221,6 +233,7 @@ def export_minimal(
     output_dir: Path,
     dtype: str,
 ) -> Path:
+    """Handle export minimal."""
     ckpt = load_checkpoint(checkpoint_path)
     config = load_config(ckpt, checkpoint_path)
     state_dict = convert_state_dict(state_dict_from_checkpoint(ckpt), dtype)
@@ -239,6 +252,7 @@ def export_minimal(
 
 
 def verify_export(model_path: Path, tokenizer_path: Path, config_path: Path) -> str:
+    """Handle verify export."""
     from inference import GuppyEmailInference
 
     engine = GuppyEmailInference(model_path, tokenizer_path, config_path, device="cpu")
@@ -251,6 +265,7 @@ def verify_export(model_path: Path, tokenizer_path: Path, config_path: Path) -> 
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Export guppyemail deployment artifacts.")
     parser.add_argument("--checkpoint", default=str(BASE_DIR / "checkpoints" / "best_model.pt"))
     parser.add_argument("--tokenizer", default=str(BASE_DIR / "data" / "training_quality" / "tokenizer.json"))
@@ -265,6 +280,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     args = parse_args()
     checkpoint_path = Path(args.checkpoint)
     tokenizer_path = Path(args.tokenizer)

@@ -7,6 +7,7 @@ from dataclasses import dataclass, fields
 
 @dataclass
 class GuppyEmailConfig:
+    """Represent GuppyEmailConfig behavior."""
     vocab_size: int = 4096
     max_seq_len: int = 512
     d_model: int = 384
@@ -20,6 +21,7 @@ class GuppyEmailConfig:
 
     @classmethod
     def from_dict(cls, values: dict | None) -> "GuppyEmailConfig":
+        """Build the configuration from a dictionary."""
         if not values:
             return cls()
         valid = {field.name for field in fields(cls)}
@@ -28,6 +30,7 @@ class GuppyEmailConfig:
 
 @dataclass
 class TrainConfig:
+    """Represent TrainConfig behavior."""
     batch_size: int = 16
     grad_accum_steps: int = 2
     learning_rate: float = 3e-4
@@ -43,6 +46,7 @@ class TrainConfig:
 
     @classmethod
     def from_dict(cls, values: dict | None) -> "TrainConfig":
+        """Build the configuration from a dictionary."""
         if not values:
             return cls()
         valid = {field.name for field in fields(cls)}

@@ -52,17 +52,20 @@ for d in [DATA_DIR, RAW_DIR, PROC_DIR, SUM_DIR, TRAIN_DIR, CHARTS_DIR, REPORT_DI
 STAGES = ["download", "clean", "summarize", "format", "train"]
 
 def load_state():
+    """Load state."""
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return json.load(f)
     return {"stages": {}, "started": None}
 
 def save_state(state):
+    """Save state."""
     state["updated"] = datetime.now().isoformat()
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, default=str)
 
 def init_state():
+    """Handle init state."""
     state = load_state()
     for s in STAGES:
         if s not in state["stages"]:
@@ -75,6 +78,7 @@ def init_state():
 # ─── Settings ────────────────────────────────────────────────────────────────
 
 def load_settings():
+    """Load settings."""
     defaults = {"show_summarization": False}
     if SETTINGS_FILE.exists():
         with open(SETTINGS_FILE) as f:
@@ -82,18 +86,21 @@ def load_settings():
     return defaults
 
 def save_settings(s):
+    """Save settings."""
     with open(SETTINGS_FILE, "w") as f:
         json.dump(s, f, indent=2)
 
 # ─── Data helpers ────────────────────────────────────────────────────────────
 
 def count_jsonl(path):
+    """Handle count jsonl."""
     if not path.exists():
         return 0
     with open(path) as f:
         return sum(1 for _ in f)
 
 def load_jsonl(path, limit=None):
+    """Load jsonl."""
     if not path.exists():
         return []
     out = []
@@ -108,9 +115,11 @@ def load_jsonl(path, limit=None):
     return out
 
 def email_hash(text):
+    """Handle email hash."""
     return hashlib.md5(normalize_text_hash(text).encode()).hexdigest()
 
 def deduplicate_records(records, existing_hashes):
+    """Handle deduplicate records."""
     unique = []
     skipped = 0
     for r in records:
@@ -124,6 +133,7 @@ def deduplicate_records(records, existing_hashes):
     return unique, skipped
 
 def get_existing_hashes(path):
+    """Return existing hashes."""
     hashes = set()
     if not path.exists():
         return hashes
@@ -138,6 +148,7 @@ def get_existing_hashes(path):
     return hashes
 
 def get_counts():
+    """Return counts."""
     cleaned_path = PROC_DIR / "cleaned_emails.jsonl"
     cleaned_rows = count_jsonl(cleaned_path)
     cleaned_unique = unique_record_count(cleaned_path)
@@ -151,6 +162,7 @@ def get_counts():
     }
 
 def pipeline_count_markdowns():
+    """Handle pipeline count markdowns."""
     counts = get_counts()
     return (
         f"**{counts['raw']:,}**",
@@ -160,6 +172,7 @@ def pipeline_count_markdowns():
     )
 
 def get_raw_stats():
+    """Return raw stats."""
     p = RAW_DIR / "enron_stats.json"
     if p.exists():
         with open(p) as f:
@@ -167,27 +180,34 @@ def get_raw_stats():
     return {}
 
 def write_jsonl(path, records):
+    """Write jsonl."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 def normalize_text_hash(text):
+    """Handle normalize text hash."""
     return " ".join((text or "").split()).strip().lower()
 
 def record_text(record):
+    """Handle record text."""
     return record.get("cleaned_body") or record.get("text") or record.get("message") or ""
 
 def record_hash(record):
+    """Handle record hash."""
     return email_hash(normalize_text_hash(record_text(record)))
 
 def record_prefix_hash(record, chars=200):
+    """Handle record prefix hash."""
     return email_hash(normalize_text_hash(record_text(record))[:chars])
 
 def unique_record_count(path):
+    """Handle unique record count."""
     return len({record_hash(row) for row in load_jsonl(path)})
 
 def cleaned_profile():
+    """Handle cleaned profile."""
     path = PROC_DIR / "cleaned_emails.profile.json"
     if not path.exists():
         return {}
@@ -200,6 +220,7 @@ SUMMARY_TYPES = {"summary", "no_summary_needed", "noise", "error", "malformed"}
 SUMMARY_QUALITIES = {"good", "weak", "noise"}
 
 def summary_flags(summary, max_chars=300):
+    """Handle summary flags."""
     text = (summary or "").strip()
     lower = text.lower()
     flags = []
@@ -235,6 +256,7 @@ def summary_flags(summary, max_chars=300):
     return flags
 
 def summary_row_flags(row, max_chars=300):
+    """Handle summary row flags."""
     summary_type = str(row.get("summary_type", "")).strip().lower()
     summary_quality = str(row.get("summary_quality", row.get("quality", ""))).strip().lower()
     summary = row.get("summary", "")
@@ -258,6 +280,7 @@ def summary_row_flags(row, max_chars=300):
     return sorted(set(flags))
 
 def quality_snapshot(max_summary_chars=300):
+    """Handle quality snapshot."""
     raw = load_jsonl(RAW_DIR / "enron_sample.jsonl")
     cleaned = load_jsonl(PROC_DIR / "cleaned_emails.jsonl")
     summaries = load_jsonl(SUM_DIR / "en_summaries.jsonl")
@@ -305,6 +328,7 @@ def quality_snapshot(max_summary_chars=300):
     }
 
 def run_quality_scan(max_summary_chars=300):
+    """Run quality scan."""
     rows, bad_rows, _ = quality_snapshot(max_summary_chars)
     table = [[r["index"], r["flags"], r["summary_len"], r["subject"], r["summary"]] for r in bad_rows[:100]]
     note = (
@@ -314,6 +338,7 @@ def run_quality_scan(max_summary_chars=300):
     return rows, table, note
 
 def export_bad_summaries(max_summary_chars=300):
+    """Handle export bad summaries."""
     _, bad_rows, snapshot = quality_snapshot(max_summary_chars)
     bad_indexes = {r["index"] for r in bad_rows}
     records = [r for i, r in enumerate(snapshot["summaries"]) if i in bad_indexes]
@@ -322,6 +347,7 @@ def export_bad_summaries(max_summary_chars=300):
     return f"Wrote {len(records):,} flagged rows to {out.relative_to(BASE_DIR)}"
 
 def build_clean_summaries(max_summary_chars=300):
+    """Build clean summaries."""
     summaries = load_jsonl(SUM_DIR / "en_summaries.jsonl")
     seen = set()
     clean = []
@@ -349,6 +375,7 @@ def build_clean_summaries(max_summary_chars=300):
     )
 
 def export_missing_cleaned():
+    """Handle export missing cleaned."""
     cleaned = load_jsonl(PROC_DIR / "cleaned_emails.jsonl")
     summaries = load_jsonl(SUM_DIR / "en_summaries.jsonl")
     summary_hashes = {record_hash(r) for r in summaries}
@@ -368,6 +395,7 @@ def export_missing_cleaned():
     return f"Wrote {len(missing):,} unique cleaned rows missing summaries to {out.relative_to(BASE_DIR)}."
 
 def build_unique_cleaned():
+    """Build unique cleaned."""
     cleaned = load_jsonl(PROC_DIR / "cleaned_emails.jsonl")
     seen = set()
     unique = []
@@ -389,6 +417,7 @@ def build_unique_cleaned():
     )
 
 def archive_summary_outputs():
+    """Handle archive summary outputs."""
     pid = _load_pid() if "PID_FILE" in globals() else None
     if pid and _pid_alive(pid):
         return f"Summarization is running (PID {pid}); stop it before archiving outputs."
@@ -417,6 +446,7 @@ def archive_summary_outputs():
     return "Archived summary outputs:\n" + "\n".join(archived) + "\nReady for a clean redo from cleaned_emails.unique.jsonl."
 
 def build_quality_training_split(val_pct=10, test_pct=5, seed=42, max_seq_len=512):
+    """Build quality training split."""
     source = SUM_DIR / "en_summaries.clean.jsonl"
     if not source.exists():
         source = SUM_DIR / "en_summaries.jsonl"
@@ -442,6 +472,7 @@ def build_quality_training_split(val_pct=10, test_pct=5, seed=42, max_seq_len=51
     return result.stdout.strip()
 
 def generate_training_files(source_name="clean summaries", val_pct=10, test_pct=5, seed=42, max_summary_chars=300):
+    """Generate training files."""
     source = SUM_DIR / "en_summaries.clean.jsonl"
     if source_name == "all summaries" or not source.exists():
         source = SUM_DIR / "en_summaries.jsonl"
@@ -490,6 +521,7 @@ def generate_training_files(source_name="clean summaries", val_pct=10, test_pct=
     )
 
 def sync_pipeline_state():
+    """Handle sync pipeline state."""
     counts = get_counts()
     state = init_state()
     state["stages"]["download"] = {
@@ -518,6 +550,7 @@ def sync_pipeline_state():
 # ─── Hardware ────────────────────────────────────────────────────────────────
 
 def get_hw():
+    """Return hw."""
     cpu = psutil.cpu_percent(interval=0.3)
     ram = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -554,6 +587,7 @@ STYLE = {
 }
 
 def apply_style(ax):
+    """Handle apply style."""
     ax.set_facecolor(STYLE["bg"])
     for spine in ax.spines.values():
         spine.set_color(STYLE["grid"])
@@ -565,6 +599,7 @@ def apply_style(ax):
     ax.grid(True, alpha=0.1, color=STYLE["grid"])
 
 def chart_length_dist():
+    """Create the length dist chart."""
     records = load_jsonl(PROC_DIR / "cleaned_emails.jsonl", limit=5000)
     key = "cleaned_body"
     if not records:
@@ -586,6 +621,7 @@ def chart_length_dist():
     return p
 
 def chart_funnel():
+    """Create the funnel chart."""
     c = get_counts()
     labels = ["Raw", "Cleaned unique", "Summarized", "Training"]
     vals = [c["raw"], c["cleaned_unique"], c["summarized"], c["training"]]
@@ -608,6 +644,7 @@ def chart_funnel():
     return p
 
 def chart_summary_len():
+    """Create the summary len chart."""
     records = load_jsonl(SUM_DIR / "en_summaries.jsonl", limit=5000)
     if not records:
         return None
@@ -625,6 +662,7 @@ def chart_summary_len():
     return p
 
 def render_charts():
+    """Handle render charts."""
     return chart_length_dist(), chart_funnel(), chart_summary_len()
 
 REPORT_CHART_FILES = [
@@ -641,9 +679,11 @@ REPORT_CHART_FILES = [
 ]
 
 def report_chart_paths():
+    """Handle report chart paths."""
     return [str(p) if p.exists() else None for p in REPORT_CHART_FILES]
 
 def generate_full_analytics():
+    """Generate full analytics."""
     script = BASE_DIR / "scripts" / "analyze_data.py"
     try:
         result = subprocess.run(
@@ -661,6 +701,7 @@ def generate_full_analytics():
 # ─── Pipeline actions ────────────────────────────────────────────────────────
 
 def run_download(n_emails):
+    """Run download."""
     n = int(n_emails)
     state = init_state()
     state["stages"]["download"] = {"status": "running", "count": 0, "time": datetime.now().isoformat()}
@@ -696,6 +737,7 @@ def run_download(n_emails):
         return f"Error: {e}"
 
 def run_clean():
+    """Run clean."""
     state = init_state()
     state["stages"]["clean"] = {"status": "running", "count": 0, "time": datetime.now().isoformat()}
     save_state(state)
@@ -731,6 +773,7 @@ def run_clean():
 # ─── Tab: Pipeline ───────────────────────────────────────────────────────────
 
 def tab_pipeline():
+    """Handle tab pipeline."""
     counts = get_counts()
 
     with gr.Tab("Pipeline"):
@@ -763,6 +806,7 @@ def tab_pipeline():
                 clean_out = gr.Textbox(label="", lines=3, interactive=False)
 
         def run_clean_and_refresh():
+            """Run clean and refresh."""
             out = run_clean()
             return (out, *pipeline_count_markdowns())
 
@@ -793,6 +837,7 @@ DATASET_FILES = {
 }
 
 def dataset_body(record):
+    """Handle dataset body."""
     return (
         record.get("cleaned_body")
         or record.get("email")
@@ -803,18 +848,23 @@ def dataset_body(record):
     )
 
 def dataset_summary(record):
+    """Handle dataset summary."""
     return record.get("summary", "")
 
 def dataset_subject(record):
+    """Handle dataset subject."""
     return record.get("subject", "")
 
 def dataset_flags(record):
+    """Handle dataset flags."""
     return ",".join(summary_row_flags(record))
 
 def load_dataset_records(name):
+    """Load dataset records."""
     return load_jsonl(DATASET_FILES.get(name, RAW_DIR / "enron_sample.jsonl"))
 
 def filter_dataset_records(records, search_text="", quality_filter="all"):
+    """Handle filter dataset records."""
     if search_text:
         query = search_text.lower()
         records = [
@@ -836,6 +886,7 @@ def filter_dataset_records(records, search_text="", quality_filter="all"):
     return records
 
 def data_browser_page(name, search_text="", quality_filter="all", page_num=1, page_size=25):
+    """Handle data browser page."""
     records = filter_dataset_records(load_dataset_records(name), search_text, quality_filter)
     page_size = max(5, int(page_size or 25))
     page_num = max(1, int(page_num or 1))
@@ -862,6 +913,7 @@ def data_browser_page(name, search_text="", quality_filter="all", page_num=1, pa
     return rows, info
 
 def data_record_detail(name, row_index=0, search_text="", quality_filter="all"):
+    """Handle data record detail."""
     records = filter_dataset_records(load_dataset_records(name), search_text, quality_filter)
     if not records:
         return "", "", "{}"
@@ -881,6 +933,7 @@ def data_record_detail(name, row_index=0, search_text="", quality_filter="all"):
     return body, summary, json.dumps(meta, indent=2, ensure_ascii=False)
 
 def tab_data():
+    """Handle tab data."""
     with gr.Tab("Data"):
         initial_dataset = "clean summaries" if DATASET_FILES["clean summaries"].exists() else "summaries"
         initial_rows, initial_info = data_browser_page(initial_dataset)
@@ -925,9 +978,11 @@ def tab_data():
         metadata_detail = gr.Code(label="Metadata", value=initial_meta, language="json", lines=10, interactive=False)
 
         def load_page(name, search_text, filter_name, page_num, size):
+            """Load page."""
             return data_browser_page(name, search_text, filter_name, page_num, size)
 
         def reset_and_load(name, search_text, filter_name, size):
+            """Handle reset and load."""
             rows, info = data_browser_page(name, search_text, filter_name, 1, size)
             return rows, info, 1
 
@@ -943,6 +998,7 @@ def tab_data():
 # ─── Tab: Quality ────────────────────────────────────────────────────────────
 
 def tab_quality():
+    """Handle tab quality."""
     with gr.Tab("Quality"):
         gr.Markdown(
             "Scan generated data, identify duplicate-ish rows and bad summaries, "
@@ -1016,6 +1072,7 @@ TOKENIZER_SOURCE_FILES = {
 }
 
 def tokenizer_status_rows():
+    """Handle tokenizer status rows."""
     rows = [
         ["Clean summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.clean.jsonl'):,}"],
         ["All summaries", f"{count_jsonl(SUM_DIR / 'en_summaries.jsonl'):,}"],
@@ -1050,12 +1107,14 @@ def tokenizer_status_rows():
     return rows
 
 def tokenizer_preview():
+    """Handle tokenizer preview."""
     rows = load_jsonl(TRAIN_DIR / "train.jsonl", limit=1)
     if not rows:
         return "{}"
     return json.dumps(rows[0], indent=2, ensure_ascii=False)
 
 def numeric_stats(values):
+    """Handle numeric stats."""
     if not values:
         return {"min": 0, "median": 0, "mean": 0, "p95": 0, "max": 0}
     values = sorted(values)
@@ -1069,6 +1128,7 @@ def numeric_stats(values):
     }
 
 def chart_tokenizer_lengths(split_lengths, split_truncated, max_seq_len):
+    """Create the tokenizer lengths chart."""
     if not any(split_lengths.values()):
         return None
 
@@ -1103,6 +1163,7 @@ def chart_tokenizer_lengths(split_lengths, split_truncated, max_seq_len):
     return str(path)
 
 def analyze_tokenizer_artifacts():
+    """Handle analyze tokenizer artifacts."""
     tokenizer_path = TRAIN_DIR / "tokenizer.json"
     metrics_path = TRAIN_DIR / "tokenizer_metrics.json"
     if not tokenizer_path.exists():
@@ -1225,6 +1286,7 @@ def analyze_tokenizer_artifacts():
     return summary_rows, split_rows, chart_path, note
 
 def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_pct, test_pct, seed):
+    """Handle prepare tokenizer from dashboard."""
     source = TOKENIZER_SOURCE_FILES.get(source_name, SUM_DIR / "en_summaries.clean.jsonl")
     if not source.exists():
         analysis_rows, split_rows, chart_path, note = analyze_tokenizer_artifacts()
@@ -1300,6 +1362,7 @@ def prepare_tokenizer_from_dashboard(source_name, vocab_size, max_seq_len, val_p
     )
 
 def tab_tokenizer():
+    """Handle tab tokenizer."""
     with gr.Tab("Train Tokenizer"):
         gr.Markdown(
             "Prepare a 4096-token BPE tokenizer "
@@ -1376,6 +1439,7 @@ def tab_tokenizer():
 # ─── Tab: Charts ─────────────────────────────────────────────────────────────
 
 def tab_charts():
+    """Handle tab charts."""
     with gr.Tab("Charts"):
         gr.Markdown("Quick dashboard charts plus report-ready analytics artifacts for the paper/document.")
 
@@ -1424,6 +1488,7 @@ def tab_charts():
 PID_FILE = DATA_DIR / ".summarize_pid"
 
 def _pid_alive(pid):
+    """Internal helper for pid alive."""
     try:
         os.kill(pid, 0)
         return True
@@ -1431,6 +1496,7 @@ def _pid_alive(pid):
         return False
 
 def _load_pid():
+    """Internal helper for load pid."""
     if PID_FILE.exists():
         try:
             return int(PID_FILE.read_text().strip())
@@ -1439,13 +1505,16 @@ def _load_pid():
     return None
 
 def _save_pid(pid):
+    """Internal helper for save pid."""
     PID_FILE.write_text(str(pid))
 
 def _clear_pid():
+    """Internal helper for clear pid."""
     if PID_FILE.exists():
         PID_FILE.unlink()
 
 def tail_log(n=80):
+    """Handle tail log."""
     log_path = DATA_DIR / "summaries" / "summarize.log"
     if not log_path.exists():
         return ""
@@ -1457,6 +1526,7 @@ _last_count = 0
 _last_count_ts = datetime.now()
 
 def _detect_stall(current_count):
+    """Internal helper for detect stall."""
     global _last_count, _last_count_ts
     if current_count != _last_count:
         _last_count = current_count
@@ -1470,6 +1540,7 @@ def _detect_stall(current_count):
 _process = None
 
 def summarization_input_stats(input_file):
+    """Handle summarization input stats."""
     input_path = PROC_DIR / input_file
     input_hashes = []
     seen = set()
@@ -1491,6 +1562,7 @@ def summarization_input_stats(input_file):
     }
 
 def summarization_cost_markdown(model, max_tok, input_file):
+    """Handle summarization cost markdown."""
     prices = {
         "gpt-4o-mini": {"input": 0.15, "output": 0.60},
         "deepseek-v4-flash": {"input": 0.07, "output": 0.28},
@@ -1512,6 +1584,7 @@ def summarization_cost_markdown(model, max_tok, input_file):
     )
 
 def tab_summarization():
+    """Handle tab summarization."""
     global _process
 
     with gr.Tab("Summarization"):
@@ -1564,9 +1637,11 @@ def tab_summarization():
         log_visible = gr.Checkbox(label="Show Log", value=True)
 
         def update_cost(model, max_tok, input_file):
+            """Handle update cost."""
             return summarization_cost_markdown(model, max_tok, input_file)
 
         def provider_for_model(model):
+            """Handle provider for model."""
             return "dashscope" if str(model or "").startswith("qwen") else "openai"
 
         model_input.change(update_cost, inputs=[model_input, max_tokens, input_source], outputs=[cost_estimate])
@@ -1575,6 +1650,7 @@ def tab_summarization():
         input_source.change(update_cost, inputs=[model_input, max_tokens, input_source], outputs=[cost_estimate])
 
         def start_summarization(model, provider, api_key, base_url, max_tok, workers, cooldown_n, cooldown_s, batch_limit, input_file, reset_existing):
+            """Handle start summarization."""
             global _process
 
             pid = _load_pid()
@@ -1633,6 +1709,7 @@ def tab_summarization():
                 return "Status: **Error: {}**".format(e), tail_log()
 
         def stop_summarization():
+            """Handle stop summarization."""
             global _process
 
             pid = _load_pid()
@@ -1654,6 +1731,7 @@ def tab_summarization():
             return "Status: **{}**".format("Stopped" if killed else "No process running"), tail_log()
 
         def poll_status(input_file):
+            """Handle poll status."""
             global _process, _last_count
 
             stats = summarization_input_stats(input_file)
@@ -1692,6 +1770,7 @@ def tab_summarization():
 # ─── Tab: System ─────────────────────────────────────────────────────────────
 
 def tab_system():
+    """Handle tab system."""
     with gr.Tab("System"):
         with gr.Row():
             cpu = gr.Number(label="CPU %", value=0, interactive=False)
@@ -1711,6 +1790,7 @@ def tab_system():
         refresh_btn = gr.Button("Refresh", variant="primary")
 
         def refresh():
+            """Handle refresh."""
             hw = get_hw()
             state = init_state()
             t = [[s, v.get("status", "pending"), v.get("count", 0), v.get("time", "—")] for s, v in state.get("stages", {}).items()]
@@ -1729,6 +1809,7 @@ def tab_system():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    """Run the command-line entry point."""
     init_state()
 
     css = """

@@ -29,6 +29,7 @@ SPECIAL_TOKENS = ["<pad>", "<|im_start|>", "<|im_end|>"]
 
 
 def load_jsonl(path):
+    """Load jsonl."""
     rows = []
     if not path.exists():
         return rows
@@ -42,6 +43,7 @@ def load_jsonl(path):
 
 
 def write_jsonl(path, rows):
+    """Write jsonl."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
@@ -49,6 +51,7 @@ def write_jsonl(path, rows):
 
 
 def record_email(row):
+    """Handle record email."""
     return (
         row.get("cleaned_body")
         or row.get("email")
@@ -59,10 +62,12 @@ def record_email(row):
 
 
 def record_summary(row):
+    """Handle record summary."""
     return (row.get("summary") or "").strip()
 
 
 def full_chatml(email, summary):
+    """Handle full chatml."""
     return (
         f"<|im_start|>user\n{email}<|im_end|>\n"
         f"<|im_start|>assistant\n{summary}<|im_end|>"
@@ -70,6 +75,7 @@ def full_chatml(email, summary):
 
 
 def train_tokenizer(texts, output_path, vocab_size):
+    """Handle train tokenizer."""
     tokenizer = Tokenizer(models.BPE())
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     tokenizer.decoder = decoders.ByteLevel()
@@ -87,6 +93,7 @@ def train_tokenizer(texts, output_path, vocab_size):
 
 
 def fit_chatml(tokenizer, email, summary, max_seq_len):
+    """Handle fit chatml."""
     text = full_chatml(email, summary)
     ids = tokenizer.encode(text).ids
     if len(ids) <= max_seq_len:
@@ -111,6 +118,7 @@ def fit_chatml(tokenizer, email, summary, max_seq_len):
 
 
 def build_rows(source_rows, tokenizer, max_seq_len):
+    """Build rows."""
     formatted = []
     skipped = 0
     truncated = 0
@@ -139,6 +147,7 @@ def build_rows(source_rows, tokenizer, max_seq_len):
 
 
 def split_rows(rows, val_pct, test_pct, seed):
+    """Handle split rows."""
     rng = random.Random(int(seed))
     rows = list(rows)
     rng.shuffle(rows)
@@ -162,6 +171,7 @@ def prepare_training_data(
     test_pct=5,
     seed=42,
 ):
+    """Handle prepare training data."""
     rows = load_jsonl(input_path)
     if not rows:
         raise FileNotFoundError(f"No source rows found at {input_path}")
@@ -200,6 +210,7 @@ def prepare_training_data(
 
 
 def parse_args():
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Train guppyemail BPE tokenizer and ChatML splits.")
     parser.add_argument("--input", default=str(SUM_DIR / "en_summaries.clean.jsonl"))
     parser.add_argument("--output-dir", default=str(TRAIN_DIR))
@@ -212,6 +223,7 @@ def parse_args():
 
 
 def main():
+    """Run the command-line entry point."""
     args = parse_args()
     metrics = prepare_training_data(
         input_path=Path(args.input),

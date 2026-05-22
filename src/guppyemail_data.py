@@ -25,6 +25,7 @@ def parse_chatml(text: str) -> tuple[str, str]:
 
 
 def load_chatml_rows(path: str | Path) -> list[dict]:
+    """Load chatml rows."""
     rows = []
     with Path(path).open(encoding="utf-8") as handle:
         for line in handle:
@@ -42,6 +43,7 @@ class EmailSummaryDataset(Dataset):
     """Dataset with labels masked so loss is computed only on assistant text."""
 
     def __init__(self, path: str | Path, tokenizer, max_len: int = 512):
+        """Initialize the instance."""
         self.path = Path(path)
         self.tokenizer = tokenizer
         self.max_len = max_len
@@ -70,9 +72,11 @@ class EmailSummaryDataset(Dataset):
                 self.samples.append((ids, labels))
 
     def __len__(self) -> int:
+        """Return the number of available samples."""
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return one indexed sample."""
         ids, labels = self.samples[idx]
         return (
             torch.tensor(ids[:-1], dtype=torch.long),
@@ -81,6 +85,7 @@ class EmailSummaryDataset(Dataset):
 
 
 def collate_batch(batch, pad_id: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Handle collate batch."""
     xs, ys = zip(*batch)
     max_len = max(x.numel() for x in xs)
     x_pad = torch.full((len(xs), max_len), pad_id, dtype=torch.long)

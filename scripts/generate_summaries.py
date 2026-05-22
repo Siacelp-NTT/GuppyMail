@@ -27,10 +27,12 @@ import requests
 
 
 def now_ts():
+    """Handle now ts."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def fmt_duration(seconds):
+    """Handle fmt duration."""
     seconds = int(seconds)
     minutes, secs = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
@@ -42,6 +44,7 @@ def fmt_duration(seconds):
 
 
 def short_error(error):
+    """Handle short error."""
     return " ".join(str(error).split())[:180]
 
 
@@ -88,11 +91,13 @@ DASHSCOPE_MULTIMODAL_MODELS = {
 
 
 def normalize_hash(text):
+    """Handle normalize hash."""
     normalized = re.sub(r"\s+", " ", (text or "")).strip().lower()
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
 
 def resolve_provider(provider, model):
+    """Handle resolve provider."""
     provider = (provider or "auto").strip().lower()
     if provider != "auto":
         return provider
@@ -100,6 +105,7 @@ def resolve_provider(provider, model):
 
 
 def dashscope_endpoint(base_url, model):
+    """Handle dashscope endpoint."""
     base = (base_url or DASHSCOPE_DEFAULT_BASE_URL).rstrip("/")
     if dashscope_uses_multimodal(model):
         return base + "/services/aigc/multimodal-generation/generation"
@@ -107,17 +113,20 @@ def dashscope_endpoint(base_url, model):
 
 
 def dashscope_uses_multimodal(model):
+    """Handle dashscope uses multimodal."""
     model_name = (model or "").lower()
     return model_name in DASHSCOPE_MULTIMODAL_MODELS or "-vl" in model_name
 
 
 def dashscope_content(model, text):
+    """Handle dashscope content."""
     if dashscope_uses_multimodal(model):
         return [{"text": text}]
     return text
 
 
 def extract_dashscope_content(data):
+    """Handle extract dashscope content."""
     output = data.get("output") or {}
     choices = output.get("choices") or []
     if choices:
@@ -137,6 +146,7 @@ def extract_dashscope_content(data):
 
 
 def parse_structured_summary(content):
+    """Handle parse structured summary."""
     raw = (content or "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
@@ -181,6 +191,7 @@ def parse_structured_summary(content):
 
 
 def malformed_summary(content, reason):
+    """Handle malformed summary."""
     return {
         "summary": "",
         "summary_type": "malformed",
@@ -191,6 +202,7 @@ def malformed_summary(content, reason):
 
 
 def summarize_one(api_key, base_url, email_text, subject, model, max_tokens, structured=True, temperature=0.0, provider="openai"):
+    """Handle summarize one."""
     if len(email_text) > 3000:
         email_text = email_text[:3000] + "... [truncated]"
     full_text = f"Subject: {subject}\n\n{email_text}" if subject else email_text
@@ -262,6 +274,7 @@ def summarize_one(api_key, base_url, email_text, subject, model, max_tokens, str
 
 
 def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, checkpoint_every=50, save_callback=None, echo_fn=print, cooldown_every=100, cooldown_secs=15, max_per_batch=0, structured=True, temperature=0.0, provider="openai"):
+    """Handle summarize batch."""
     results = [None] * len(emails)
     errors = []
     completed = 0
@@ -280,6 +293,7 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
         url = base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     def job(idx):
+        """Handle job."""
         email = emails[idx]
         cleaned = email.get("cleaned_body", "")
         subject = email.get("subject", "")
@@ -402,6 +416,7 @@ def summarize_batch(emails, model, api_key, base_url, max_tokens, workers, check
 
 
 def load_emails(path):
+    """Load emails."""
     emails = []
     if not os.path.exists(path):
         return emails
@@ -415,6 +430,7 @@ def load_emails(path):
 
 
 def save_results(results, path):
+    """Save results."""
     tmp = path + ".tmp"
     bak = path + ".bak"
     with open(tmp, "w") as f:
@@ -430,6 +446,7 @@ def save_results(results, path):
 
 
 def save_malformed_results(results, path):
+    """Save malformed results."""
     malformed = [r for r in results if r.get("summary_type") == "malformed"]
     malformed_path = str(Path(path).with_suffix(".malformed.jsonl"))
     if not malformed:
@@ -472,6 +489,7 @@ def archive_summary_outputs(output_path):
 
 
 def main():
+    """Run the command-line entry point."""
     os.chdir(os.path.dirname(__file__) + "/.." if "__file__" in dir() else ".")
 
     parser = argparse.ArgumentParser()
@@ -507,6 +525,7 @@ def main():
 
     if not has_key:
         def echo(msg):
+            """Handle echo."""
             print(msg)
             if log:
                 log.write(msg + "\n")
@@ -517,6 +536,7 @@ def main():
         return
 
     def echo(msg):
+        """Handle echo."""
         print(msg, flush=True)
         if log:
             log.write(msg + "\n")
@@ -573,6 +593,7 @@ def main():
     checkpoint_count = [0]  # mutable counter
 
     def checkpoint(new_results):
+        """Handle checkpoint."""
         checkpoint_count[0] += 1
         all_r = existing + new_results
         save_results(all_r, output_path)

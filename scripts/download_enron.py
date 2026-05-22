@@ -163,6 +163,7 @@ def save_sample(df, text_col, out_dir='data/raw', prefix='enron_sample'):
 
 
 def parse_args():
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Download and sample Enron emails for guppyemail.")
     parser.add_argument("--sample-size", type=int, default=int(os.environ.get("SAMPLE_SIZE", 25000)))
     parser.add_argument("--min-len", type=int, default=200)
@@ -173,6 +174,7 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    """Run the command-line entry point."""
     args = parse_args()
     os.chdir(BASE_DIR)
     print("Working directory:", os.getcwd())

@@ -25,6 +25,7 @@ class ExtractorPattern:
 
     @classmethod
     def compile(cls, name: str, pattern: str) -> "ExtractorPattern":
+        """Handle compile."""
         return cls(name=name, regex=re.compile(pattern, re.IGNORECASE | re.MULTILINE))
 
 
@@ -32,6 +33,7 @@ class ActionExtractor:
     """Extract explicit tasks, deadlines, requests, and meetings from email text."""
 
     def __init__(self) -> None:
+        """Initialize the instance."""
         item_text = r"[^.\n?!;]+(?:\.(?!\s|$)[^.\n?!;]+)*"
         self.no_action_patterns = [
             re.compile(pattern, re.IGNORECASE)
@@ -125,6 +127,7 @@ class ActionExtractor:
         patterns: list[ExtractorPattern],
         limit: int,
     ) -> list[str]:
+        """Internal helper for extract group."""
         values: list[str] = []
         for pattern in patterns:
             for match in pattern.regex.finditer(text):
@@ -136,6 +139,7 @@ class ActionExtractor:
 
     @staticmethod
     def _match_text(match: re.Match[str]) -> str:
+        """Internal helper for match text."""
         groups = [group for group in match.groups() if group]
         if groups:
             return " ".join(groups)
@@ -143,15 +147,18 @@ class ActionExtractor:
 
     @staticmethod
     def _normalize_text(email_text: str) -> str:
+        """Internal helper for normalize text."""
         return re.sub(r"[ \t]+", " ", (email_text or "").replace("\r", "\n")).strip()
 
     @staticmethod
     def _clean_item(value: str) -> str:
+        """Internal helper for clean item."""
         value = " ".join((value or "").split())
         value = re.sub(r"^(?:to|that|if|about)\s+", "", value, flags=re.IGNORECASE)
         return value.strip(" ,:-")
 
     def _is_valid_item(self, value: str) -> bool:
+        """Return whether valid item is true."""
         if not value or len(value) < 3 or len(value) > 160:
             return False
         if any(pattern.search(value) for pattern in self.no_action_patterns):
@@ -159,10 +166,12 @@ class ActionExtractor:
         return True
 
     def _is_no_action_notice(self, text: str) -> bool:
+        """Return whether no action notice is true."""
         return any(pattern.search(text) for pattern in self.no_action_patterns)
 
     @staticmethod
     def _dedupe(values: list[str]) -> list[str]:
+        """Internal helper for dedupe."""
         seen: set[str] = set()
         deduped: list[str] = []
         for value in values:

@@ -40,6 +40,7 @@ class GmailMessage:
     body: str
 
     def preview(self, max_body_chars: int = 180) -> str:
+        """Handle preview."""
         body = " ".join(self.body.split())
         if len(body) > max_body_chars:
             body = body[:max_body_chars].rstrip() + "..."
@@ -65,6 +66,7 @@ def html_to_text(value: str) -> str:
 
 
 def clean_text(value: str) -> str:
+    """Handle clean text."""
     value = value.replace("\r", "\n").replace("\xa0", " ")
     value = re.sub(r"[ \t]+", " ", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
@@ -72,6 +74,7 @@ def clean_text(value: str) -> str:
 
 
 def display_path(path: Path) -> str:
+    """Handle display path."""
     try:
         return str(path.relative_to(BASE_DIR))
     except ValueError:
@@ -79,6 +82,7 @@ def display_path(path: Path) -> str:
 
 
 def header_value(headers: list[dict[str, str]], name: str) -> str:
+    """Handle header value."""
     for header in headers:
         if header.get("name", "").lower() == name.lower():
             return header.get("value", "")
@@ -124,15 +128,18 @@ class GmailClient:
         credentials_path: str | Path = DEFAULT_CREDENTIALS_PATH,
         token_path: str | Path = DEFAULT_TOKEN_PATH,
     ) -> None:
+        """Initialize the instance."""
         self.credentials_path = Path(credentials_path)
         self.token_path = Path(token_path)
         self.service = None
         self.creds: Credentials | None = None
 
     def has_credentials_file(self) -> bool:
+        """Return whether credentials file is available."""
         return self.credentials_path.exists()
 
     def has_token_file(self) -> bool:
+        """Return whether token file is available."""
         return self.token_path.exists()
 
     def authenticate(
@@ -187,6 +194,7 @@ class GmailClient:
         }
 
     def list_message_ids(self, max_results: int = 10, query: str = "") -> list[dict[str, str]]:
+        """Handle list message ids."""
         service = self.connect(run_oauth=False)
         try:
             response = (
@@ -200,6 +208,7 @@ class GmailClient:
         return response.get("messages", []) or []
 
     def get_message(self, message_id: str, body_max_chars: int = 6000) -> GmailMessage:
+        """Return message."""
         service = self.connect(run_oauth=False)
         try:
             message = (
@@ -233,6 +242,7 @@ class GmailClient:
         query: str = "",
         body_max_chars: int = 6000,
     ) -> list[GmailMessage]:
+        """Handle fetch recent."""
         messages = self.list_message_ids(max_results=max_results, query=query)
         return [
             self.get_message(message["id"], body_max_chars=body_max_chars)
@@ -242,6 +252,7 @@ class GmailClient:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Authenticate and fetch Gmail messages.")
     parser.add_argument("--auth", action="store_true", help="Run OAuth and save token.json.")
     parser.add_argument("--max-results", type=int, default=5)
@@ -252,6 +263,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     args = parse_args()
     client = GmailClient()
 

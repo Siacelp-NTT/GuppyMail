@@ -45,6 +45,7 @@ TRAINABLE_QUALITIES = {"", "good"}
 
 
 def load_jsonl(path: Path) -> list[dict]:
+    """Load jsonl."""
     rows = []
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
@@ -58,10 +59,12 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def word_count(text: str) -> int:
+    """Handle word count."""
     return len((text or "").split())
 
 
 def rejection_reasons(row: dict, args: argparse.Namespace) -> list[str]:
+    """Handle rejection reasons."""
     email = record_email(row)
     summary = record_summary(row)
     email_words = word_count(email)
@@ -103,6 +106,7 @@ def rejection_reasons(row: dict, args: argparse.Namespace) -> list[str]:
 
 
 def filter_rows(rows: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict], Counter]:
+    """Handle filter rows."""
     accepted = []
     rejected = []
     reason_counts = Counter()
@@ -132,6 +136,7 @@ def filter_rows(rows: list[dict], args: argparse.Namespace) -> tuple[list[dict],
 
 
 def is_fallback_row(row: dict) -> bool:
+    """Return whether fallback row is true."""
     summary_type = str(row.get("summary_type", "")).strip().lower()
     summary_quality = str(row.get("summary_quality", row.get("quality", ""))).strip().lower()
     reasons = set(row.get("reject_reasons", []))
@@ -146,6 +151,7 @@ def is_fallback_row(row: dict) -> bool:
 
 
 def write_report(output_dir: Path, metrics: dict, reason_counts: Counter) -> None:
+    """Write report."""
     lines = [
         "# guppyemail Quality Training Data Report",
         "",
@@ -179,6 +185,7 @@ def write_report(output_dir: Path, metrics: dict, reason_counts: Counter) -> Non
 
 
 def write_training_zip(output_dir: Path, zip_output: str | None) -> str | None:
+    """Write training zip."""
     if not zip_output:
         return None
     zip_path = Path(zip_output)
@@ -203,6 +210,7 @@ def write_training_zip(output_dir: Path, zip_output: str | None) -> str | None:
 
 
 def prepare_quality_training_data(args: argparse.Namespace) -> dict:
+    """Handle prepare quality training data."""
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -282,6 +290,7 @@ def prepare_quality_training_data(args: argparse.Namespace) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Build quality-filtered guppyemail training data.")
     parser.add_argument("--input", default=str(DEFAULT_INPUT))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
@@ -302,6 +311,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the command-line entry point."""
     metrics = prepare_quality_training_data(parse_args())
     print(json.dumps(metrics, indent=2))
 

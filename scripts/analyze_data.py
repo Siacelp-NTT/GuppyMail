@@ -58,6 +58,7 @@ STOPWORDS = {
 
 
 def load_jsonl(path):
+    """Load jsonl."""
     if not path.exists():
         return []
     rows = []
@@ -71,6 +72,7 @@ def load_jsonl(path):
 
 
 def load_json(path):
+    """Load json."""
     if not path.exists():
         return {}
     try:
@@ -80,6 +82,7 @@ def load_json(path):
 
 
 def text_of(record):
+    """Handle text of."""
     return (
         record.get("cleaned_body")
         or record.get("email")
@@ -90,10 +93,12 @@ def text_of(record):
 
 
 def summary_of(record):
+    """Handle summary of."""
     return record.get("summary", "")
 
 
 def token_count_of(record):
+    """Handle token count of."""
     value = record.get("token_count")
     if isinstance(value, int):
         return value
@@ -101,14 +106,17 @@ def token_count_of(record):
 
 
 def norm_text(text):
+    """Handle norm text."""
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def hash_text(text):
+    """Handle hash text."""
     return hashlib.md5(norm_text(text).encode("utf-8")).hexdigest()
 
 
 def percentile(values, q):
+    """Handle percentile."""
     if not values:
         return 0
     values = sorted(values)
@@ -117,6 +125,7 @@ def percentile(values, q):
 
 
 def stats(values):
+    """Handle stats."""
     if not values:
         return {"count": 0, "min": 0, "median": 0, "mean": 0, "p95": 0, "max": 0}
     values = sorted(values)
@@ -131,6 +140,7 @@ def stats(values):
 
 
 def summary_flags(summary, max_chars=300):
+    """Handle summary flags."""
     text = (summary or "").strip()
     lower = text.lower()
     flags = []
@@ -159,6 +169,7 @@ def summary_flags(summary, max_chars=300):
 
 
 def save_fig(fig, name):
+    """Save fig."""
     CHARTS_DIR.mkdir(parents=True, exist_ok=True)
     path = CHARTS_DIR / name
     fig.tight_layout()
@@ -168,12 +179,14 @@ def save_fig(fig, name):
 
 
 def style_axes(ax):
+    """Handle style axes."""
     ax.grid(True, alpha=0.25)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
 
 def chart_pipeline(counts):
+    """Create the pipeline chart."""
     labels = ["Raw", "Cleaned unique", "Summarized", "Quality filtered", "Train+Val+Test"]
     values = [
         counts["raw"],
@@ -195,6 +208,7 @@ def chart_pipeline(counts):
 
 
 def chart_lengths(raw, cleaned, clean_summaries):
+    """Create the lengths chart."""
     raw_lens = [len(text_of(r)) for r in raw]
     clean_lens = [len(text_of(r)) for r in cleaned]
     sum_lens = [len(summary_of(r)) for r in clean_summaries]
@@ -213,6 +227,7 @@ def chart_lengths(raw, cleaned, clean_summaries):
 
 
 def chart_cleaning_retention(cleaned):
+    """Create the cleaning retention chart."""
     ratios = []
     original = []
     cleaned_len = []
@@ -238,6 +253,7 @@ def chart_cleaning_retention(cleaned):
 
 
 def chart_summary_relationship(clean_summaries):
+    """Create the summary relationship chart."""
     x = [len(text_of(r)) for r in clean_summaries]
     y = [len(summary_of(r)) for r in clean_summaries]
     ratios = [len(summary_of(r)) / max(len(text_of(r)), 1) for r in clean_summaries]
@@ -256,6 +272,7 @@ def chart_summary_relationship(clean_summaries):
 
 
 def chart_quality(summaries):
+    """Create the quality chart."""
     flag_counter = Counter()
     for r in summaries:
         for flag in summary_flags(summary_of(r)):
@@ -272,6 +289,7 @@ def chart_quality(summaries):
 
 
 def chart_summary_label_quality(summaries, quality_metrics):
+    """Create the summary label quality chart."""
     type_counts = Counter(str(r.get("summary_type") or "missing").strip().lower() for r in summaries)
     quality_counts = Counter(str(r.get("summary_quality") or r.get("quality") or "missing").strip().lower() for r in summaries)
     training_counts = {
@@ -309,6 +327,7 @@ def chart_summary_label_quality(summaries, quality_metrics):
 
 
 def chart_splits(train, val, test):
+    """Create the splits chart."""
     splits = {"train": train, "val": val, "test": test}
     labels = list(splits)
     counts = [len(splits[k]) for k in labels]
@@ -337,6 +356,7 @@ def chart_splits(train, val, test):
 
 
 def chart_duplicates(raw, cleaned, summaries):
+    """Create the duplicates chart."""
     datasets = {
         "raw": raw,
         "cleaned": cleaned,
@@ -365,6 +385,7 @@ def chart_duplicates(raw, cleaned, summaries):
 
 
 def chart_top_terms(clean_summaries):
+    """Create the top terms chart."""
     counter = Counter()
     for r in clean_summaries:
         words = re.findall(r"[a-zA-Z]{4,}", summary_of(r).lower())
@@ -381,6 +402,7 @@ def chart_top_terms(clean_summaries):
 
 
 def chart_tokenizer_lengths(train, val, test, tokenization):
+    """Create the tokenizer lengths chart."""
     splits = {"train": train, "eval": val, "test": test}
     split_lengths = {name: [token_count_of(r) for r in rows if token_count_of(r)] for name, rows in splits.items()}
     if not any(split_lengths.values()):
@@ -414,6 +436,7 @@ def chart_tokenizer_lengths(train, val, test, tokenization):
 
 
 def write_statistics_csv(metrics):
+    """Write statistics csv."""
     path = REPORT_DIR / "dataset_statistics.csv"
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
@@ -429,6 +452,7 @@ def write_statistics_csv(metrics):
 
 
 def write_markdown(metrics, charts):
+    """Write markdown."""
     path = REPORT_DIR / "data_profile.md"
     label_quality = metrics.get("summary_label_quality", {})
     type_counts = label_quality.get("summary_type_counts", {})
@@ -488,6 +512,7 @@ def write_markdown(metrics, charts):
 
 
 def build_metrics(raw, cleaned, summaries, clean_summaries, quality_filtered, no_summary, train, val, test, clean_profile, quality_metrics):
+    """Build metrics."""
     summary_lengths = [len(summary_of(r)) for r in quality_filtered]
     summary_words = [len(summary_of(r).split()) for r in quality_filtered]
     cleaned_lengths = [len(text_of(r)) for r in cleaned]
@@ -570,6 +595,7 @@ def build_metrics(raw, cleaned, summaries, clean_summaries, quality_filtered, no
 
 
 def generate_report():
+    """Generate report."""
     raw = load_jsonl(RAW_PATH)
     cleaned = load_jsonl(CLEAN_PATH)
     clean_profile = load_json(CLEAN_PROFILE_PATH)
@@ -612,6 +638,7 @@ def generate_report():
 
 
 def main():
+    """Run the command-line entry point."""
     result = generate_report()
     print("Generated analytics report")
     print(f"Markdown: {result['markdown']}")

@@ -28,6 +28,7 @@ class PatternGroup:
 
     @classmethod
     def compile(cls, priority: Priority, reason: str, patterns: list[str]) -> "PatternGroup":
+        """Handle compile."""
         return cls(
             priority=priority,
             reason=reason,
@@ -35,6 +36,7 @@ class PatternGroup:
         )
 
     def matches(self, text: str) -> list[str]:
+        """Handle matches."""
         return [pattern.pattern for pattern in self.patterns if pattern.search(text)]
 
 
@@ -42,6 +44,7 @@ class PriorityClassifier:
     """Classify email priority using deterministic keyword and phrase rules."""
 
     def __init__(self) -> None:
+        """Initialize the instance."""
         self.urgent = PatternGroup.compile(
             "urgent",
             "Contains urgent timing, escalation, or action-required language.",
@@ -133,6 +136,7 @@ class PriorityClassifier:
 
     @staticmethod
     def _normalize(email_text: str, subject: str = "") -> str:
+        """Internal helper for normalize."""
         return " ".join(f"{subject or ''} {email_text or ''}".split()).lower()
 
 
