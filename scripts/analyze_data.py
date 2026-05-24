@@ -28,7 +28,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+def project_root() -> Path:
+    """Return a repo root path that remains writable under WSL path casing."""
+    root = Path(__file__).resolve().parent.parent
+    if str(root).startswith("/mnt/"):
+        lowered = Path(str(root).lower())
+        if lowered.exists():
+            return lowered
+    return root
+
+
+BASE_DIR = project_root()
 DATA_DIR = BASE_DIR / "data"
 RAW_PATH = DATA_DIR / "raw" / "enron_sample.jsonl"
 CLEAN_PATH = DATA_DIR / "processed" / "cleaned_emails.jsonl"
